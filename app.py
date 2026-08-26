@@ -214,8 +214,10 @@ def _send_via_resend(cfg: dict, to: str, subject: str, body: str, attachments: l
     payload = {"from": sender, "to": [to], "subject": subject, "text": body,
                "attachments": [{"filename": p.name, "content": base64.b64encode(p.read_bytes()).decode()} for p in attachments]}
     req = urllib.request.Request("https://api.resend.com/emails", data=json.dumps(payload).encode(),
-                                 headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
-                                          "Content-Type": "application/json"}, method="POST")
+                                 headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY'].strip()}",
+                                          "Content-Type": "application/json", "Accept": "application/json",
+                                          "User-Agent": "MailSort/1.0 (+https://github.com/usamamuchada-code/mailsort)"},
+                                 method="POST")
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             r.read()
