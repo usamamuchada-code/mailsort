@@ -11,7 +11,7 @@ Data:    everything is kept in ./data  (clients.csv, config.json, batches/<batch
 """
 from __future__ import annotations
 
-import csv, io, json, os, smtplib, threading, uuid, datetime as dt
+import csv, io, json, os, smtplib, socket, threading, urllib.error, uuid, datetime as dt
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -163,7 +163,19 @@ def process_in_background(bid: str, pdf: Path, note: str):
 
 # ----------------------------------------------------------------------------- email sending
 
+def _ipv4_only_getaddrinfo(*args, **kwargs):
+    """Some hosts (e.g. Railway) resolve smtp.gmail.com to IPv6 but have no IPv6 route -> 'Network is unreachable'."""
+    return [ai for ai in _real_getaddrinfo(*args, **kwargs) if ai[0] == socket.AF_INET]
+
+
+_real_getaddrinfo = socket.getaddrinfo
+
+
 def send_email(cfg: dict, to: str, subject: str, body: str, attachments: list[Path]) -> None:
+    # Option A – Resend (HTTPS API, works everywhere). Set RESEND_API_KEY in Railway variables.
+    if os.environ.get("RESEND_API_KEY"):
+        return _send_via_resend(cfg, to, subject, body, attachments)
+    # Option B – SMTP (Gmail app password etc.)
     if not (cfg.get("smtp_user") and cfg.get("smtp_password")):
         raise RuntimeError("Email is not configured – open Settings and enter SMTP details.")
     msg = EmailMessage()
@@ -173,10 +185,42 @@ def send_email(cfg: dict, to: str, subject: str, body: str, attachments: list[Pa
     msg.set_content(body)
     for p in attachments:
         msg.add_attachment(p.read_bytes(), maintype="application", subtype="pdf", filename=p.name)
-    with smtplib.SMTP(cfg["smtp_host"], int(cfg["smtp_port"]), timeout=60) as s:
-        s.starttls()
-        s.login(cfg["smtp_user"], cfg["smtp_password"])
-        s.send_message(msg)
+    socket.getaddrinfo = _ipv4_only_getaddrinfo
+    try:
+        port = int(cfg["smtp_port"])
+        if port == 465:
+            with smtplib.SMTP_SSL(cfg["smtp_host"], port, timeout=60) as s:
+                s.login(cfg["smtp_user"], cfg["smtp_password"])
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(cfg["smtp_host"], port, timeout=60) as s:
+                s.starttls()
+                s.login(cfg["smtp_user"], cfg["smtp_password"])
+                s.send_message(msg)
+    except OSError as e:
+        if getattr(e, "errno", None) in (101, 110, 111):
+            raise RuntimeError(f"{e} – this host appears to block outgoing mail connections. "
+                               "Add a RESEND_API_KEY variable (see DEPLOY_RAILWAY.md) to send over HTTPS instead.")
+        raise
+    finally:
+        socket.getaddrinfo = _real_getaddrinfo
+
+
+def _send_via_resend(cfg: dict, to: str, subject: str, body: str, attachments: list[Path]) -> None:
+    import base64, urllib.request
+    sender = cfg.get("from_email") or "onboarding@resend.dev"
+    if cfg.get("sender_name"):
+        sender = f"{cfg['sender_name']} <{sender}>"
+    payload = {"from": sender, "to": [to], "subject": subject, "text": body,
+               "attachments": [{"filename": p.name, "content": base64.b64encode(p.read_bytes()).decode()} for p in attachments]}
+    req = urllib.request.Request("https://api.resend.com/emails", data=json.dumps(payload).encode(),
+                                 headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
+                                          "Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            r.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Resend rejected the email ({e.code}): {e.read().decode()[:300]}")
 
 
 def draft_parts(bdir: Path, e: dict) -> tuple[str, str]:
