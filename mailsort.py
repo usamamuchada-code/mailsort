@@ -94,6 +94,8 @@ list of client company names. Decide:
 - letter_type: one of official_government, bank_financial, legal, invoice_bill, marketing, personal, other.
 - urgency: high | normal | low  (high = deadlines, penalties, legal, court, tax demands).
 - summary: one short sentence describing the letter for the client.
+- address: the full recipient address block exactly as printed on the page (company name and all
+  address lines, separated by ", "); "" if the page shows no recipient address.
 
 Respond with ONLY a JSON object with those keys."""
 
@@ -147,7 +149,7 @@ def classify_pages_heuristic(pages: list[dict], client_names: list[str]) -> list
         cont = (not blank) and (best == "" or best == prev) and not re.search(r"\bdear\b", p["text"], re.I)
         out.append({"page": p["page"], "recipient_company": best or (prev if cont else ""),
                     "is_continuation": cont and prev is not None, "is_blank": blank,
-                    "sender": "", "letter_type": "other", "urgency": "normal",
+                    "sender": "", "letter_type": "other", "urgency": "normal", "address": "",
                     "summary": "(heuristic mode – no AI summary)"})
         if not blank:
             prev = best or prev
@@ -174,7 +176,7 @@ def group_letters(classified: list[dict]) -> list[dict]:
         if current is not None and c.get("is_continuation"):
             current["pages"].append(c["page"])
             continue
-        current = {"pages": [c["page"]], "recipient_company": c.get("recipient_company", ""),
+        current = {"pages": [c["page"]], "address": c.get("address", ""), "recipient_company": c.get("recipient_company", ""),
                    "sender": c.get("sender", ""), "letter_type": c.get("letter_type", "other"),
                    "urgency": c.get("urgency", "normal"), "summary": c.get("summary", "")}
         letters.append(current)
@@ -281,13 +283,13 @@ def build_emails(letters: list[dict], out_dir: Path, sender_name: str, today: st
 def write_manifest(letters, emails, out_dir: Path, batch_tag: str, today: str):
     with open(out_dir / "manifest.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["batch", "letter_id", "pages", "recipient_as_printed", "matched_client", "client_id",
+        w.writerow(["batch", "letter_id", "pages", "recipient_as_printed", "address_as_printed", "matched_client", "client_id",
                     "match_score", "client_status", "client_email", "sender", "letter_type", "urgency",
                     "summary", "file", "siu_office", "needs_review"])
         for L in letters:
             c = L.get("client") or {}
             w.writerow([batch_tag, L["letter_id"], "-".join(map(str, L["pages"])) if len(L["pages"]) > 1 else L["pages"][0],
-                        L["recipient_company"], c.get("company_name", ""), c.get("client_id", ""),
+                        L["recipient_company"], L.get("address", ""), c.get("company_name", ""), c.get("client_id", ""),
                         f"{L['match_score']:.2f}", c.get("status", ""), c.get("email", ""), L["sender"],
                         L["letter_type"], L["urgency"], L["summary"], L.get("file", ""),
                         "yes" if L.get("siu_ok", True) else "MISSING", L["needs_review"]])
@@ -363,8 +365,7 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
     status("Checking SIU office on each letter …", 0.89)
     page_text = {pg["page"]: pg["text"] for pg in pages}
     for L in letters:
-        first = page_text.get(L["pages"][0], "")
-        L["siu_ok"] = has_siu(first)
+        L["siu_ok"] = has_siu(page_text.get(L["pages"][0], ""))
 
     status("Matching letters to clients …", 0.90)
     for L in letters:

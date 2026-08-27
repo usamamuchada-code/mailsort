@@ -49,7 +49,8 @@ def require_login():
 
 JOBS: dict[str, dict] = {}  # batch_id -> {"msg", "frac", "done", "error"}
 
-REQUIRED_COLS = ["client_id", "company_name", "contact_name", "email", "status"]
+REQUIRED_COLS = ["client_id", "company_name", "contact_name", "email", "status", "package"]
+PACKAGES = ["Basic", "Standard", "Premium"]
 
 
 # ----------------------------------------------------------------------------- config / clients
@@ -95,7 +96,8 @@ def parse_client_upload(raw: bytes) -> list[dict]:
     # tolerate different header spellings
     alias = {"company": "company_name", "name": "company_name", "client": "company_name",
              "contact": "contact_name", "email_address": "email", "e-mail": "email",
-             "id": "client_id", "account_status": "status", "subscription_status": "status"}
+             "id": "client_id", "account_status": "status", "subscription_status": "status",
+             "plan": "package", "subscription": "package", "package_name": "package", "tier": "package"}
     out = []
     for r in rows:
         n = {}
@@ -107,6 +109,9 @@ def parse_client_upload(raw: bytes) -> list[dict]:
             continue
         n.setdefault("client_id", ""); n.setdefault("contact_name", ""); n.setdefault("email", "")
         n["status"] = (n.get("status") or "active").lower()
+        n["package"] = (n.get("package") or "").strip().capitalize()
+        if n["package"] and n["package"] not in PACKAGES:
+            n["package"] = ""
         out.append(n)
     missing = [c for c in ("company_name", "email") if not any(x.get(c) for x in out)]
     if missing:
@@ -167,14 +172,16 @@ def process_in_background(bid: str, pdf: Path, note: str):
         for L in r["letters"]:
             c = L.get("client") or {}
             letters.append({k: L[k] for k in ("letter_id", "pages", "recipient_company", "sender", "letter_type",
-                                              "urgency", "summary", "file", "needs_review", "match_score", "siu_ok")}
+                                              "urgency", "summary", "file", "needs_review", "match_score", "siu_ok")} | {"address": L.get("address", "")}
                            | {"client": {k: c.get(k, "") for k in REQUIRED_COLS} if c else None})
         emails = []
         for e in r["emails"]:
             missing = [L["letter_id"] for L in r["letters"] if L.get("client") and L["client"]["company_name"] == e["company"] and not L.get("siu_ok", True)]
             if missing:
                 e = {**e, "action": f"HOLD – SIU office missing on {', '.join(missing)}"}
-            emails.append({**e, "sent_at": None, "sent_to": None})
+            pkg = next((L["client"].get("package", "") for L in r["letters"]
+                        if L.get("client") and L["client"]["company_name"] == e["company"]), "")
+            emails.append({**e, "package": pkg, "sent_at": None, "sent_to": None, "manual_sent_at": None})
         save_batch(bid, {"id": bid, "created": dt.datetime.now().isoformat(timespec="seconds"), "note": note,
                          "pdf": pdf.name, "pages": r["pages"], "mode": r["mode"], "summary": r["summary"],
                          "letters": letters, "emails": emails})
@@ -265,20 +272,24 @@ def draft_parts(bdir: Path, e: dict) -> tuple[str, str]:
 
 # ----------------------------------------------------------------------------- templates
 
-BASE = """<!doctype html><html><head><meta charset="utf-8"><title>MailSort</title>
+BASE = """<!doctype html><html><head><meta charset="utf-8"><title>Startitup Mail Room</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
-:root{--b:#1d4ed8;--bg:#f6f7fb;--card:#fff;--line:#e5e7eb;--warn:#fff4e5;--ok:#e8f7ee}
-*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:#1f2937}
-header{background:#111827;color:#fff;padding:14px 28px;display:flex;gap:28px;align-items:center}
-header a{color:#d1d5db;text-decoration:none;font-weight:500}header a.brand{color:#fff;font-size:18px;font-weight:700}
+:root{--b:#111111;--bg:#fafafa;--card:#fff;--line:#e7e7e7;--warn:#fff4e5;--ok:#e8f7ee}
+*{box-sizing:border-box}body{font-family:'Hanken Grotesk',system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:#111}
+header{background:#fff;border-bottom:1px solid var(--line);padding:12px 28px;display:flex;gap:28px;align-items:center}
+header a{color:#555;text-decoration:none;font-weight:600}header a:hover{color:#111}
+header a.brand{display:flex;align-items:center;gap:10px;color:#111}
+header a.brand img{height:30px;display:block}header a.brand span{font-size:13px;font-weight:600;color:#777;border-left:1px solid var(--line);padding-left:10px;letter-spacing:.02em}
 main{max-width:1200px;margin:28px auto;padding:0 20px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:22px;margin-bottom:22px}
 h1{font-size:22px;margin:0 0 16px}h2{font-size:17px;margin:0 0 12px}
 table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top}
-th{background:#f9fafb;font-weight:600}tr.review{background:var(--warn)}tr.sent{background:var(--ok)}
-.btn{display:inline-block;background:var(--b);color:#fff;border:0;border-radius:7px;padding:9px 16px;font-size:14px;cursor:pointer;text-decoration:none}
-.btn.secondary{background:#e5e7eb;color:#111}.btn.small{padding:5px 10px;font-size:13px}.btn:disabled{opacity:.5}
+th{background:#f7f7f7;font-weight:700}tr.review{background:var(--warn)}tr.sent{background:var(--ok)}
+.btn{display:inline-block;background:var(--b);color:#fff;border:0;border-radius:999px;padding:9px 18px;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none}
+.btn:hover{background:#333}.btn.secondary{background:#efefef;color:#111}.btn.secondary:hover{background:#e2e2e2}.btn.small{padding:5px 10px;font-size:13px}.btn:disabled{opacity:.5}
 input[type=text],input[type=password],input[type=number],textarea{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px}
 label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
 .drop{border:2px dashed #94a3b8;border-radius:10px;padding:36px;text-align:center;background:#fafafa}
@@ -288,7 +299,8 @@ label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
 .pill.high{background:#fee2e2;color:#991b1b}.pill.active{background:#dcfce7;color:#166534}.pill.hold{background:#fee2e2;color:#991b1b}
 progress{width:100%;height:14px}
 </style></head><body>
-<header><a class="brand" href="/">MailSort</a><a href="/">Batches</a><a href="/history">History</a><a href="/clients">Client database</a><a href="/settings">Settings</a></header>
+<header><a class="brand" href="/"><img src="data:image/png;base64,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" alt="Startitup"><span>Mail Room</span></a>
+<a href="/">Batches</a><a href="/history">History</a><a href="/clients">Client database</a><a href="/settings">Settings</a></header>
 <main>{% with m = get_flashed_messages() %}{% for x in m %}<div class="flash">{{x}}</div>{% endfor %}{% endwith %}
 {% block body %}{% endblock %}</main></body></html>"""
 
@@ -327,29 +339,33 @@ document.getElementById('msg').textContent=r.msg;document.getElementById('bar').
 {% if b.mode!='ai' %}&middot; <span class="pill high">classified WITHOUT AI ({{b.mode}}) – check Settings</span>{% endif %}</p>
 {% set missing = b.letters|rejectattr("siu_ok")|list %}{% if missing %}<div class="flash" style="background:#fee2e2;border-color:#fca5a5"><b>SIU office missing on {{missing|length}} letter(s):</b>
 {% for L in missing %}{{L.letter_id}} ({{L.client.company_name if L.client else L.recipient_company or "unknown addressee"}}){% if not loop.last %}, {% endif %}{% endfor %}.
-These cannot be downloaded or emailed – please notify the customer(s) that their post must carry the SIU office in the address.</div>{% endif %}
+These cannot be opened, downloaded or emailed – please notify the customer(s) that their post must carry the SIU office in the address.</div>{% endif %}
 <p><a class="btn secondary small" href="/batch/{{bid}}/file/manifest.csv">Download manifest.csv</a>
 <a class="btn secondary small" href="/batch/{{bid}}/zip">Download all letters (zip)</a></p></div>
 
 <div class="card"><h2>Client emails</h2>
 <table><tr><th>Client</th><th>Email</th><th>Status</th><th>Letters</th><th>Action</th><th>Sent</th><th></th></tr>
-{% for e in b.emails %}<tr class="{{'sent' if e.sent_at else ('review' if not e.action.startswith('SEND') else '')}}">
-<td>{{e.company}}</td><td>{{e.email}}</td><td><span class="pill {{'active' if e.status=='active' else 'hold'}}">{{e.status}}</span></td>
-<td>{{e.letters}}</td><td>{{e.action}}</td><td>{{e.sent_at or '–'}}</td>
+{% for e in b.emails %}<tr class="{{'sent' if e.sent_at or e.manual_sent_at else ('review' if not e.action.startswith('SEND') else '')}}">
+<td>{{e.company}}</td><td>{{e.email}}</td><td><span class="pill {{'active' if e.status=='active' else 'hold'}}">{{e.status}}</span>{% if e.package %} <span class="pill">{{e.package}}</span>{% endif %}</td>
+<td>{{e.letters}}</td><td>{{e.action}}</td><td>{% if e.sent_at %}{{e.sent_at|replace("T"," ")}} <span class="muted">(emailed)</span>{% elif e.manual_sent_at %}{{e.manual_sent_at|replace("T"," ")}} <span class="muted">(marked by staff)</span>{% else %}–{% endif %}</td>
 <td>{% if 'SIU' in e.action %}<span class="btn small secondary" style="opacity:.45" title="SIU office missing">PDFs</span>{% else %}<a class="btn small secondary" href="/batch/{{bid}}/client_zip/{{loop.index0}}">PDFs</a>{% endif %} <a class="btn small secondary" href="/batch/{{bid}}/email/{{loop.index0}}">Preview</a>
 <form method="post" action="/batch/{{bid}}/send/{{loop.index0}}" style="display:inline" onsubmit="return confirm('Send to {{e.email}}?')">
-<button class="btn small" {% if not e.email or 'SIU' in e.action %}disabled{% endif %}>{{'Re-send' if e.sent_at else 'Send'}}</button></form></td></tr>{% endfor %}</table>
+<button class="btn small" {% if not e.email or 'SIU' in e.action %}disabled{% endif %}>{{'Re-send' if e.sent_at else 'Send'}}</button></form>
+<form method="post" action="/batch/{{bid}}/mark_sent/{{loop.index0}}" style="display:inline">
+<button class="btn small secondary">{{'Unmark' if e.manual_sent_at else 'Mark as sent'}}</button></form></td></tr>{% endfor %}</table>
 <p style="margin-top:14px"><form method="post" action="/batch/{{bid}}/send_all" onsubmit="return confirm('Send to every ACTIVE client that has not been emailed yet?')">
 <button class="btn">Send all active &amp; unsent</button></form></p></div>
 
-<div class="card"><h2>Letters ({{b.letters|length}})</h2><p class="muted">Orange rows need a human check. Green rows have been downloaded ({{b.letters|selectattr("downloaded_at")|list|length}} of {{b.letters|length}} so far) – e.g. for manual upload to the portal.</p>
+<div class="card"><h2>Letters ({{b.letters|length}})</h2><p class="muted">Orange rows need a human check. Downloaded: {{b.letters|selectattr("downloaded_at")|list|length}} of {{b.letters|length}} · opened (viewed only): {{b.letters|rejectattr("downloaded_at")|selectattr("opened_at")|list|length}} · untouched: {{b.letters|rejectattr("downloaded_at")|rejectattr("opened_at")|list|length}}. Green rows are downloaded – e.g. for manual upload to the portal.</p>
 <table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Downloaded</th><th>Review</th></tr>
 {% for L in b.letters %}<tr class="{{'review' if L.needs_review else ('sent' if L.downloaded_at else '')}}"{% if not L.siu_ok %} style="background:#fee2e2"{% endif %}><td>{{L.letter_id}}</td><td>{{L.pages|join('-')}}</td>
-<td>{{L.recipient_company}}</td><td>{% if L.client %}{{L.client.company_name}} <span class="muted">{{(L.match_score*100)|round|int}}%</span>{% else %}<b>— no match —</b>{% endif %}</td>
+<td>{{L.recipient_company}}{% if L.address %}<br><span class="muted" style="font-size:12px">{{L.address}}</span>{% endif %}</td><td>{% if L.client %}{{L.client.company_name}} <span class="muted">{{(L.match_score*100)|round|int}}%</span>{% else %}<b>— no match —</b>{% endif %}</td>
 <td>{{L.sender}}</td><td>{{L.letter_type}}</td><td><span class="pill {{L.urgency}}">{{L.urgency}}</span></td><td>{{L.summary}}</td>
 <td>{% if L.siu_ok %}<span class="pill active">✔</span>{% else %}<span class="pill high">MISSING</span>{% endif %}</td>
-<td><a href="/batch/{{bid}}/file/{{L.file}}" target="_blank">open</a>{% if L.siu_ok %} · <a href="/batch/{{bid}}/download/{{L.file}}">download</a>{% else %} · <span class="muted" title="SIU office missing">blocked</span>{% endif %}</td>
-<td>{% if L.downloaded_at %}<span class="pill active">✔ {{L.downloaded_at|replace("T"," ")}}</span>{% else %}<span class="muted">not yet</span>{% endif %}</td><td>{{L.needs_review}}</td></tr>{% endfor %}</table></div>
+<td>{% if L.siu_ok %}<a href="/batch/{{bid}}/file/{{L.file}}" target="_blank">open</a> · <a href="/batch/{{bid}}/download/{{L.file}}">download</a>{% else %}<span class="pill high">blocked</span>{% endif %}</td>
+<td>{% if L.downloaded_at %}<span class="pill active">✔ downloaded {{L.downloaded_at|replace("T"," ")}}</span>
+{% elif L.opened_at %}<span class="pill">👁 opened ×{{L.opens or 1}} · {{L.opened_at|replace("T"," ")}}</span>
+{% else %}<span class="muted">not yet</span>{% endif %}</td><td>{{L.needs_review}}</td></tr>{% endfor %}</table></div>
 {% endif %}{% endblock %}"""
 
 EMAIL = """{% extends "base" %}{% block body %}<div class="card"><h1>Email preview – {{e.company}}</h1>
@@ -360,20 +376,24 @@ EMAIL = """{% extends "base" %}{% block body %}<div class="card"><h1>Email previ
 
 CLIENTS = """{% extends "base" %}{% block body %}
 <div class="card"><h1>Client database</h1>
-<p class="muted">Upload a CSV exported from your portal. It <b>replaces</b> the current list. Headers: <code>client_id, company_name, contact_name, email, status</code>
+<p class="muted">Upload a CSV exported from your portal. It <b>replaces</b> the current list. Headers: <code>client_id, company_name, contact_name, email, status, package</code>
+(package = Basic / Standard / Premium; columns named "plan" or "subscription" are understood too)
 (status = active / overdue / suspended / cancelled). Only <b>active</b> clients are emailed automatically.</p>
 <form method="post" action="/clients/upload" enctype="multipart/form-data"><input type="file" name="csv" accept=".csv,text/csv" required>
 <button class="btn">Upload / update database</button></form>
 <p class="muted">{{clients|length}} clients on file{% if mtime %} · last updated {{mtime}}{% endif %} · <a href="/clients/download">download current CSV</a></p></div>
 <div class="card"><h2>Add or edit one client</h2>
-<form method="post" action="/clients/save"><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px">
+<form method="post" action="/clients/save"><div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
 <div><label>Client ID</label><input type="text" name="client_id"></div><div><label>Company name *</label><input type="text" name="company_name" required></div>
 <div><label>Contact</label><input type="text" name="contact_name"></div><div><label>Email</label><input type="text" name="email"></div>
-<div><label>Status</label><input type="text" name="status" value="active"></div></div>
+<div><label>Status</label><input type="text" name="status" value="active"></div>
+<div><label>Package</label><select name="package" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px">
+<option value="">—</option><option>Basic</option><option>Standard</option><option>Premium</option></select></div></div>
 <p><button class="btn">Save</button> <span class="muted">Matching company name (case-insensitive) is updated; otherwise added.</span></p></form></div>
-<div class="card"><h2>Clients</h2><table><tr><th>ID</th><th>Company</th><th>Contact</th><th>Email</th><th>Status</th></tr>
+<div class="card"><h2>Clients</h2><table><tr><th>ID</th><th>Company</th><th>Contact</th><th>Email</th><th>Status</th><th>Package</th></tr>
 {% for c in clients %}<tr><td>{{c.client_id}}</td><td>{{c.company_name}}</td><td>{{c.contact_name}}</td><td>{{c.email}}</td>
-<td><span class="pill {{'active' if c.status=='active' else 'hold'}}">{{c.status}}</span></td></tr>{% endfor %}</table></div>{% endblock %}"""
+<td><span class="pill {{'active' if c.status=='active' else 'hold'}}">{{c.status}}</span></td>
+<td>{% if c.package %}<span class="pill">{{c.package}}</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 SETTINGS = """{% extends "base" %}{% block body %}<div class="card"><h1>Settings</h1><form method="post">
 <h2>AI</h2><label>Anthropic API key</label><input type="password" name="anthropic_api_key" value="{{c.anthropic_api_key}}">
@@ -403,13 +423,13 @@ HISTORY = """{% extends "base" %}{% block body %}
 <td><a class="btn small secondary" href="/batch/{{d.batch}}/download/{{d.file}}">Download again</a></td></tr>{% endfor %}</table>{% endif %}
 <h2 style="margin-top:24px">Emails sent</h2>
 {% if not sent %}<p class="muted">No emails sent yet.</p>{% else %}
-<table><tr><th>Sent</th><th>Client</th><th>To</th><th>Letters</th><th>Batch</th><th></th></tr>
-{% for s in sent %}<tr><td>{{s.sent_at|replace("T"," ")}}</td><td>{{s.company}}</td><td>{{s.sent_to}}</td><td>{{s.letters}}</td>
+<table><tr><th>Sent</th><th>How</th><th>Client</th><th>To</th><th>Letters</th><th>Batch</th><th></th></tr>
+{% for s in sent %}<tr><td>{{s.when|replace("T"," ")}}</td><td>{% if s.how=='emailed' %}<span class="pill active">emailed</span>{% else %}<span class="pill">marked by staff</span>{% endif %}</td><td>{{s.company}}</td><td>{{s.sent_to or "—"}}</td><td>{{s.letters}}</td>
 <td>{{s.batch}}<br><span class="muted">{{s.note}}</span></td><td><a class="btn small secondary" href="/batch/{{s.batch}}">Open batch</a></td></tr>{% endfor %}</table>{% endif %}</div>
 <div class="card"><h2>All batches</h2>
-<table><tr><th>Batch</th><th>Processed</th><th>File</th><th>Result</th><th>Letters downloaded</th><th>Emails sent</th><th></th></tr>
+<table><tr><th>Batch</th><th>Processed</th><th>File</th><th>Result</th><th>Letters downloaded</th><th>Opened only</th><th>Emails sent</th><th></th></tr>
 {% for b in batches %}<tr><td>{{b.id}}</td><td>{{b.created|replace("T"," ")}}</td><td>{{b.pdf}}<br><span class="muted">{{b.note}}</span></td>
-<td>{{b.summary}}</td><td>{{b.dl}} / {{b.nletters}}</td><td>{{b.sent}} / {{b.total}}</td><td><a class="btn small secondary" href="/batch/{{b.id}}">Open</a></td></tr>{% endfor %}</table></div>{% endblock %}"""
+<td>{{b.summary}}</td><td>{{b.dl}} / {{b.nletters}}</td><td>{{b.opened}}</td><td>{{b.sent}} / {{b.total}}</td><td><a class="btn small secondary" href="/batch/{{b.id}}">Open</a></td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 app.jinja_loader = type("L", (), {"get_source": lambda self, env, name: (
     {"base": BASE, "home": HOME, "batch": BATCH, "email": EMAIL, "clients": CLIENTS, "settings": SETTINGS,
@@ -429,7 +449,7 @@ def home():
         batches.append({"id": p.name, "created": b.get("created", ""), "pdf": b.get("pdf", job.get("pdf", "")),
                         "note": b.get("note", job.get("note", "")), "summary": b.get("summary"),
                         "msg": job.get("msg", "processing…"), "error": job.get("error"),
-                        "sent": sum(1 for e in b.get("emails", []) if e.get("sent_at")),
+                        "sent": sum(1 for e in b.get("emails", []) if e.get("sent_at") or e.get("manual_sent_at")),
                         "total_emails": len(b.get("emails", []))})
     return render_template_string(HOME, clients=read_clients(), batches=batches[:50])
 
@@ -444,16 +464,19 @@ def history():
             continue
         emails, letters = b.get("emails", []), b.get("letters", [])
         batches.append({"id": b["id"], "created": b.get("created", ""), "pdf": b.get("pdf", ""), "note": b.get("note", ""),
-                        "summary": b.get("summary", ""), "sent": sum(1 for e in emails if e.get("sent_at")), "total": len(emails),
-                        "dl": sum(1 for L in letters if L.get("downloaded_at")), "nletters": len(letters)})
+                        "summary": b.get("summary", ""), "sent": sum(1 for e in emails if e.get("sent_at") or e.get("manual_sent_at")), "total": len(emails),
+                        "dl": sum(1 for L in letters if L.get("downloaded_at")), "nletters": len(letters),
+                        "opened": sum(1 for L in letters if L.get("opened_at") and not L.get("downloaded_at"))})
         for L in letters:
             name = (L.get("client") or {}).get("company_name", "")
             if L.get("downloaded_at") and (not q or q in name.lower() or q in (L.get("sender") or "").lower()):
                 downloaded.append({**L, "batch": b["id"]})
         for e in emails:
-            if e.get("sent_at") and (not q or q in e["company"].lower() or q in (e.get("sent_to") or "").lower()):
-                sent.append({**e, "batch": b["id"], "note": b.get("note", "")})
-    sent.sort(key=lambda s: s["sent_at"], reverse=True)
+            when = e.get("sent_at") or e.get("manual_sent_at")
+            if when and (not q or q in e["company"].lower() or q in (e.get("sent_to") or "").lower()):
+                sent.append({**e, "when": when, "how": "emailed" if e.get("sent_at") else "manual",
+                             "batch": b["id"], "note": b.get("note", "")})
+    sent.sort(key=lambda s: s["when"], reverse=True)
     downloaded.sort(key=lambda d: d["downloaded_at"], reverse=True)
     return render_template_string(HISTORY, batches=batches, sent=sent, downloaded=downloaded, q=q)
 
@@ -489,6 +512,18 @@ def batch(bid):
 
 @app.get("/batch/<bid>/file/<path:rel>")
 def batch_file(bid, rel):
+    if rel.startswith("letters/"):
+        b = load_batch(bid)
+        if b and siu_blocked(b, [rel]):
+            flash("Blocked: SIU office is missing from the address on this letter – it cannot be opened or downloaded. Please notify the customer.")
+            return redirect(f"/batch/{bid}")
+        if b:
+            now = dt.datetime.now().isoformat(timespec="seconds")
+            for L in b["letters"]:
+                if L["file"] == rel:
+                    L["opened_at"] = now
+                    L["opens"] = int(L.get("opens") or 0) + 1
+            save_batch(bid, b)
     return send_from_directory(batch_dir(bid), rel)
 
 
@@ -577,12 +612,26 @@ def send_one(bid, i):
     return redirect(f"/batch/{bid}")
 
 
+@app.post("/batch/<bid>/mark_sent/<int:i>")
+def mark_sent(bid, i):
+    b = load_batch(bid) or abort(404)
+    e = b["emails"][i]
+    if e.get("manual_sent_at"):
+        e["manual_sent_at"] = None
+        flash(f"{e['company']} unmarked.")
+    else:
+        e["manual_sent_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        flash(f"{e['company']} marked as sent by staff.")
+    save_batch(bid, b)
+    return redirect(f"/batch/{bid}")
+
+
 @app.post("/batch/<bid>/send_all")
 def send_all(bid):
     b = load_batch(bid) or abort(404)
     cfg, ok, fail = load_config(), 0, []
     for i, e in enumerate(b["emails"]):
-        if e["sent_at"] or not e["action"].startswith("SEND") or not e["email"]:
+        if e["sent_at"] or e.get("manual_sent_at") or not e["action"].startswith("SEND") or not e["email"]:
             continue
         try:
             _send_one(bid, b, i, cfg); ok += 1
@@ -616,6 +665,9 @@ def clients_save():
     rows = read_clients()
     new = {k: request.form.get(k, "").strip() for k in REQUIRED_COLS}
     new["status"] = (new["status"] or "active").lower()
+    new["package"] = (new.get("package") or "").capitalize()
+    if new["package"] not in PACKAGES:
+        new["package"] = ""
     key = ms.normalise_name(new["company_name"])
     for r in rows:
         if ms.normalise_name(r["company_name"]) == key:
