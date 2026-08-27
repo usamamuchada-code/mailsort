@@ -154,6 +154,16 @@ def classify_pages_heuristic(pages: list[dict], client_names: list[str]) -> list
     return out
 
 
+# ----------------------------------------------------------------------------- SIU office check
+
+# "SIU" as printed in the address – tolerant of common OCR misreads (S1U, SlU, S I U, 5IU).
+SIU_RE = re.compile(r"(?<![A-Z0-9])[S5]\s?[I1l|]\s?U(?![A-Z])", re.I)
+
+
+def has_siu(text: str) -> bool:
+    return bool(SIU_RE.search(text or ""))
+
+
 # ----------------------------------------------------------------------------- 3. group
 
 def group_letters(classified: list[dict]) -> list[dict]:
@@ -273,13 +283,14 @@ def write_manifest(letters, emails, out_dir: Path, batch_tag: str, today: str):
         w = csv.writer(f)
         w.writerow(["batch", "letter_id", "pages", "recipient_as_printed", "matched_client", "client_id",
                     "match_score", "client_status", "client_email", "sender", "letter_type", "urgency",
-                    "summary", "file", "needs_review"])
+                    "summary", "file", "siu_office", "needs_review"])
         for L in letters:
             c = L.get("client") or {}
             w.writerow([batch_tag, L["letter_id"], "-".join(map(str, L["pages"])) if len(L["pages"]) > 1 else L["pages"][0],
                         L["recipient_company"], c.get("company_name", ""), c.get("client_id", ""),
                         f"{L['match_score']:.2f}", c.get("status", ""), c.get("email", ""), L["sender"],
-                        L["letter_type"], L["urgency"], L["summary"], L.get("file", ""), L["needs_review"]])
+                        L["letter_type"], L["urgency"], L["summary"], L.get("file", ""),
+                        "yes" if L.get("siu_ok", True) else "MISSING", L["needs_review"]])
 
     def esc(x):
         return html.escape(str(x))
@@ -349,6 +360,12 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
     status("Grouping pages into letters …", 0.87)
     letters = group_letters(classified)
 
+    status("Checking SIU office on each letter …", 0.89)
+    page_text = {pg["page"]: pg["text"] for pg in pages}
+    for L in letters:
+        first = page_text.get(L["pages"][0], "")
+        L["siu_ok"] = has_siu(first)
+
     status("Matching letters to clients …", 0.90)
     for L in letters:
         c, s = match_client(L["recipient_company"], clients)
@@ -358,6 +375,7 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
         elif s < 0.95: reasons.append("fuzzy match")
         if c and (c.get("status") or "").lower() not in STATUS_OK: reasons.append(f"status={c.get('status')}")
         if c and not c.get("email"): reasons.append("no email on file")
+        if not L.get("siu_ok", True): reasons.append("SIU OFFICE MISSING")
         L["needs_review"] = "; ".join(reasons)
 
     status("Splitting PDF …", 0.93)

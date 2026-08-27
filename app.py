@@ -133,6 +133,24 @@ def save_batch(bid: str, data: dict):
     (batch_dir(bid) / "batch.json").write_text(json.dumps(data, indent=1, default=str))
 
 
+def siu_blocked(b: dict, files: list[str]) -> list[str]:
+    """Return letter ids among `files` that must not be downloaded (SIU office missing)."""
+    return [L["letter_id"] for L in b["letters"] if L["file"] in files and not L.get("siu_ok", True)]
+
+
+def mark_downloaded(bid: str, files: list[str], how: str):
+    """Record that these letter files were downloaded (for the portal-upload workflow)."""
+    b = load_batch(bid)
+    if not b:
+        return
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    for L in b["letters"]:
+        if L["file"] in files:
+            L["downloaded_at"] = now
+            L["downloaded_how"] = how
+    save_batch(bid, b)
+
+
 def process_in_background(bid: str, pdf: Path, note: str):
     cfg = load_config()
     job = JOBS[bid]
@@ -149,9 +167,14 @@ def process_in_background(bid: str, pdf: Path, note: str):
         for L in r["letters"]:
             c = L.get("client") or {}
             letters.append({k: L[k] for k in ("letter_id", "pages", "recipient_company", "sender", "letter_type",
-                                              "urgency", "summary", "file", "needs_review", "match_score")}
+                                              "urgency", "summary", "file", "needs_review", "match_score", "siu_ok")}
                            | {"client": {k: c.get(k, "") for k in REQUIRED_COLS} if c else None})
-        emails = [{**e, "sent_at": None, "sent_to": None} for e in r["emails"]]
+        emails = []
+        for e in r["emails"]:
+            missing = [L["letter_id"] for L in r["letters"] if L.get("client") and L["client"]["company_name"] == e["company"] and not L.get("siu_ok", True)]
+            if missing:
+                e = {**e, "action": f"HOLD – SIU office missing on {', '.join(missing)}"}
+            emails.append({**e, "sent_at": None, "sent_to": None})
         save_batch(bid, {"id": bid, "created": dt.datetime.now().isoformat(timespec="seconds"), "note": note,
                          "pdf": pdf.name, "pages": r["pages"], "mode": r["mode"], "summary": r["summary"],
                          "letters": letters, "emails": emails})
@@ -265,7 +288,7 @@ label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
 .pill.high{background:#fee2e2;color:#991b1b}.pill.active{background:#dcfce7;color:#166534}.pill.hold{background:#fee2e2;color:#991b1b}
 progress{width:100%;height:14px}
 </style></head><body>
-<header><a class="brand" href="/">MailSort</a><a href="/">Batches</a><a href="/clients">Client database</a><a href="/settings">Settings</a></header>
+<header><a class="brand" href="/">MailSort</a><a href="/">Batches</a><a href="/history">History</a><a href="/clients">Client database</a><a href="/settings">Settings</a></header>
 <main>{% with m = get_flashed_messages() %}{% for x in m %}<div class="flash">{{x}}</div>{% endfor %}{% endwith %}
 {% block body %}{% endblock %}</main></body></html>"""
 
@@ -302,6 +325,9 @@ document.getElementById('msg').textContent=r.msg;document.getElementById('bar').
 {% else %}
 <p>{{b.summary}} &middot; {{b.pages}} pages &middot; processed from <b>{{b.pdf}}</b> {{b.created}}
 {% if b.mode!='ai' %}&middot; <span class="pill high">classified WITHOUT AI ({{b.mode}}) – check Settings</span>{% endif %}</p>
+{% set missing = b.letters|rejectattr("siu_ok")|list %}{% if missing %}<div class="flash" style="background:#fee2e2;border-color:#fca5a5"><b>SIU office missing on {{missing|length}} letter(s):</b>
+{% for L in missing %}{{L.letter_id}} ({{L.client.company_name if L.client else L.recipient_company or "unknown addressee"}}){% if not loop.last %}, {% endif %}{% endfor %}.
+These cannot be downloaded or emailed – please notify the customer(s) that their post must carry the SIU office in the address.</div>{% endif %}
 <p><a class="btn secondary small" href="/batch/{{bid}}/file/manifest.csv">Download manifest.csv</a>
 <a class="btn secondary small" href="/batch/{{bid}}/zip">Download all letters (zip)</a></p></div>
 
@@ -310,18 +336,20 @@ document.getElementById('msg').textContent=r.msg;document.getElementById('bar').
 {% for e in b.emails %}<tr class="{{'sent' if e.sent_at else ('review' if not e.action.startswith('SEND') else '')}}">
 <td>{{e.company}}</td><td>{{e.email}}</td><td><span class="pill {{'active' if e.status=='active' else 'hold'}}">{{e.status}}</span></td>
 <td>{{e.letters}}</td><td>{{e.action}}</td><td>{{e.sent_at or '–'}}</td>
-<td><a class="btn small secondary" href="/batch/{{bid}}/email/{{loop.index0}}">Preview</a>
+<td>{% if 'SIU' in e.action %}<span class="btn small secondary" style="opacity:.45" title="SIU office missing">PDFs</span>{% else %}<a class="btn small secondary" href="/batch/{{bid}}/client_zip/{{loop.index0}}">PDFs</a>{% endif %} <a class="btn small secondary" href="/batch/{{bid}}/email/{{loop.index0}}">Preview</a>
 <form method="post" action="/batch/{{bid}}/send/{{loop.index0}}" style="display:inline" onsubmit="return confirm('Send to {{e.email}}?')">
-<button class="btn small" {% if not e.email %}disabled{% endif %}>{{'Re-send' if e.sent_at else 'Send'}}</button></form></td></tr>{% endfor %}</table>
+<button class="btn small" {% if not e.email or 'SIU' in e.action %}disabled{% endif %}>{{'Re-send' if e.sent_at else 'Send'}}</button></form></td></tr>{% endfor %}</table>
 <p style="margin-top:14px"><form method="post" action="/batch/{{bid}}/send_all" onsubmit="return confirm('Send to every ACTIVE client that has not been emailed yet?')">
 <button class="btn">Send all active &amp; unsent</button></form></p></div>
 
-<div class="card"><h2>Letters ({{b.letters|length}})</h2><p class="muted">Orange rows need a human check.</p>
-<table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Summary</th><th>PDF</th><th>Review</th></tr>
-{% for L in b.letters %}<tr class="{{'review' if L.needs_review else ''}}"><td>{{L.letter_id}}</td><td>{{L.pages|join('-')}}</td>
+<div class="card"><h2>Letters ({{b.letters|length}})</h2><p class="muted">Orange rows need a human check. Green rows have been downloaded ({{b.letters|selectattr("downloaded_at")|list|length}} of {{b.letters|length}} so far) – e.g. for manual upload to the portal.</p>
+<table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Downloaded</th><th>Review</th></tr>
+{% for L in b.letters %}<tr class="{{'review' if L.needs_review else ('sent' if L.downloaded_at else '')}}"{% if not L.siu_ok %} style="background:#fee2e2"{% endif %}><td>{{L.letter_id}}</td><td>{{L.pages|join('-')}}</td>
 <td>{{L.recipient_company}}</td><td>{% if L.client %}{{L.client.company_name}} <span class="muted">{{(L.match_score*100)|round|int}}%</span>{% else %}<b>— no match —</b>{% endif %}</td>
 <td>{{L.sender}}</td><td>{{L.letter_type}}</td><td><span class="pill {{L.urgency}}">{{L.urgency}}</span></td><td>{{L.summary}}</td>
-<td><a href="/batch/{{bid}}/file/{{L.file}}" target="_blank">open</a></td><td>{{L.needs_review}}</td></tr>{% endfor %}</table></div>
+<td>{% if L.siu_ok %}<span class="pill active">✔</span>{% else %}<span class="pill high">MISSING</span>{% endif %}</td>
+<td><a href="/batch/{{bid}}/file/{{L.file}}" target="_blank">open</a>{% if L.siu_ok %} · <a href="/batch/{{bid}}/download/{{L.file}}">download</a>{% else %} · <span class="muted" title="SIU office missing">blocked</span>{% endif %}</td>
+<td>{% if L.downloaded_at %}<span class="pill active">✔ {{L.downloaded_at|replace("T"," ")}}</span>{% else %}<span class="muted">not yet</span>{% endif %}</td><td>{{L.needs_review}}</td></tr>{% endfor %}</table></div>
 {% endif %}{% endblock %}"""
 
 EMAIL = """{% extends "base" %}{% block body %}<div class="card"><h1>Email preview – {{e.company}}</h1>
@@ -361,8 +389,31 @@ SETTINGS = """{% extends "base" %}{% block body %}<div class="card"><h1>Settings
 <label><input type="checkbox" name="attach_pdfs" {% if c.attach_pdfs %}checked{% endif %}> Attach the letter PDFs to the email</label>
 <p><button class="btn">Save settings</button> <a class="btn secondary" href="/settings/test_email">Send a test email to myself</a></p></form></div>{% endblock %}"""
 
+HISTORY = """{% extends "base" %}{% block body %}
+<div class="card"><h1>History</h1>
+<form method="get" style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+<input type="text" name="q" value="{{q}}" placeholder="Filter by client name or email…" style="max-width:360px">
+<button class="btn small">Search</button>{% if q %}<a class="btn small secondary" href="/history">Clear</a>{% endif %}
+<span class="muted">{{downloaded|length}} letter(s) downloaded · {{sent|length}} email(s) sent{% if q %} matching "{{q}}"{% endif %} · {{batches|length}} batches in total</span></form>
+<h2>Letters downloaded</h2>
+{% if not downloaded %}<p class="muted">No letters downloaded yet.</p>{% else %}
+<table><tr><th>Downloaded</th><th>Client</th><th>Letter</th><th>Sender</th><th>Pages</th><th>Batch</th><th></th></tr>
+{% for d in downloaded %}<tr><td>{{d.downloaded_at|replace("T"," ")}}</td><td>{{d.client.company_name if d.client else "— unmatched —"}}</td>
+<td>{{d.letter_id}} · {{d.summary}}</td><td>{{d.sender}}</td><td>{{d.pages|join("-")}}</td><td>{{d.batch}}</td>
+<td><a class="btn small secondary" href="/batch/{{d.batch}}/download/{{d.file}}">Download again</a></td></tr>{% endfor %}</table>{% endif %}
+<h2 style="margin-top:24px">Emails sent</h2>
+{% if not sent %}<p class="muted">No emails sent yet.</p>{% else %}
+<table><tr><th>Sent</th><th>Client</th><th>To</th><th>Letters</th><th>Batch</th><th></th></tr>
+{% for s in sent %}<tr><td>{{s.sent_at|replace("T"," ")}}</td><td>{{s.company}}</td><td>{{s.sent_to}}</td><td>{{s.letters}}</td>
+<td>{{s.batch}}<br><span class="muted">{{s.note}}</span></td><td><a class="btn small secondary" href="/batch/{{s.batch}}">Open batch</a></td></tr>{% endfor %}</table>{% endif %}</div>
+<div class="card"><h2>All batches</h2>
+<table><tr><th>Batch</th><th>Processed</th><th>File</th><th>Result</th><th>Letters downloaded</th><th>Emails sent</th><th></th></tr>
+{% for b in batches %}<tr><td>{{b.id}}</td><td>{{b.created|replace("T"," ")}}</td><td>{{b.pdf}}<br><span class="muted">{{b.note}}</span></td>
+<td>{{b.summary}}</td><td>{{b.dl}} / {{b.nletters}}</td><td>{{b.sent}} / {{b.total}}</td><td><a class="btn small secondary" href="/batch/{{b.id}}">Open</a></td></tr>{% endfor %}</table></div>{% endblock %}"""
+
 app.jinja_loader = type("L", (), {"get_source": lambda self, env, name: (
-    {"base": BASE, "home": HOME, "batch": BATCH, "email": EMAIL, "clients": CLIENTS, "settings": SETTINGS}[name], name, lambda: True)})()
+    {"base": BASE, "home": HOME, "batch": BATCH, "email": EMAIL, "clients": CLIENTS, "settings": SETTINGS,
+     "history": HISTORY}[name], name, lambda: True)})()
 
 
 # ----------------------------------------------------------------------------- routes
@@ -381,6 +432,30 @@ def home():
                         "sent": sum(1 for e in b.get("emails", []) if e.get("sent_at")),
                         "total_emails": len(b.get("emails", []))})
     return render_template_string(HOME, clients=read_clients(), batches=batches[:50])
+
+
+@app.get("/history")
+def history():
+    q = (request.args.get("q") or "").strip().lower()
+    batches, sent, downloaded = [], [], []
+    for p in sorted(BATCHES.iterdir(), reverse=True):
+        b = load_batch(p.name) if p.is_dir() else None
+        if not b:
+            continue
+        emails, letters = b.get("emails", []), b.get("letters", [])
+        batches.append({"id": b["id"], "created": b.get("created", ""), "pdf": b.get("pdf", ""), "note": b.get("note", ""),
+                        "summary": b.get("summary", ""), "sent": sum(1 for e in emails if e.get("sent_at")), "total": len(emails),
+                        "dl": sum(1 for L in letters if L.get("downloaded_at")), "nletters": len(letters)})
+        for L in letters:
+            name = (L.get("client") or {}).get("company_name", "")
+            if L.get("downloaded_at") and (not q or q in name.lower() or q in (L.get("sender") or "").lower()):
+                downloaded.append({**L, "batch": b["id"]})
+        for e in emails:
+            if e.get("sent_at") and (not q or q in e["company"].lower() or q in (e.get("sent_to") or "").lower()):
+                sent.append({**e, "batch": b["id"], "note": b.get("note", "")})
+    sent.sort(key=lambda s: s["sent_at"], reverse=True)
+    downloaded.sort(key=lambda d: d["downloaded_at"], reverse=True)
+    return render_template_string(HISTORY, batches=batches, sent=sent, downloaded=downloaded, q=q)
 
 
 @app.post("/upload")
@@ -417,11 +492,55 @@ def batch_file(bid, rel):
     return send_from_directory(batch_dir(bid), rel)
 
 
+@app.get("/batch/<bid>/download/<path:rel>")
+def batch_download(bid, rel):
+    b = load_batch(bid)
+    if b and siu_blocked(b, [rel]):
+        flash("Download blocked: SIU office is missing from the address on this letter. Please notify the customer.")
+        return redirect(f"/batch/{bid}")
+    mark_downloaded(bid, [rel], "single")
+    return send_from_directory(batch_dir(bid), rel, as_attachment=True)
+
+
+@app.get("/batch/<bid>/client_zip/<int:i>")
+def client_zip(bid, i):
+    import zipfile, tempfile
+    b = load_batch(bid) or abort(404)
+    e = b["emails"][i]
+    bdir = batch_dir(bid)
+    files = [bdir / L["file"] for L in b["letters"] if L["client"] and L["client"]["company_name"] == e["company"]]
+    blocked = siu_blocked(b, [str(f.relative_to(bdir)) for f in files])
+    if blocked:
+        flash(f"Download blocked for {e['company']}: SIU office is missing on {', '.join(blocked)}. Please notify the customer.")
+        return redirect(f"/batch/{bid}")
+    mark_downloaded(bid, [str(f.relative_to(bdir)) for f in files], "client")
+    if len(files) == 1:
+        return send_from_directory(files[0].parent, files[0].name, as_attachment=True)
+    tmp = Path(tempfile.gettempdir()) / f"mailsort_{bid}_{i}.zip"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            z.write(f, f.name)
+    return send_from_directory(tmp.parent, tmp.name, as_attachment=True, download_name=f"{ms.slug(e['company'])}_{bid}.zip")
+
+
 @app.get("/batch/<bid>/zip")
 def batch_zip(bid):
     import shutil, tempfile
     bdir = batch_dir(bid)
-    tmp = Path(tempfile.gettempdir()) / f"mailsort_{bid}"
+    b = load_batch(bid)
+    ok = [L for L in (b or {}).get("letters", []) if L.get("siu_ok", True)]
+    bad = [L["letter_id"] for L in (b or {}).get("letters", []) if not L.get("siu_ok", True)]
+    if bad:
+        flash(f"Zip created WITHOUT {', '.join(bad)} – SIU office missing on those letters. Please notify the customer(s).")
+    mark_downloaded(bid, [L["file"] for L in ok], "all")
+    import zipfile
+    tmp = Path(tempfile.gettempdir()) / f"mailsort_{bid}.zip"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for L in ok:
+            z.write(bdir / L["file"], L["file"].replace("letters/", "", 1))
+        if (bdir / "manifest.csv").exists():
+            z.write(bdir / "manifest.csv", "manifest.csv")
+    return send_from_directory(tmp.parent, tmp.name, as_attachment=True, download_name=f"{bid}_letters.zip")
     shutil.make_archive(str(tmp), "zip", bdir / "letters")
     return send_from_directory(tmp.parent, tmp.name + ".zip", as_attachment=True, download_name=f"{bid}_letters.zip")
 
@@ -437,6 +556,8 @@ def email_preview(bid, i):
 
 def _send_one(bid: str, b: dict, i: int, cfg: dict):
     e = b["emails"][i]
+    if "SIU" in e.get("action", ""):
+        raise RuntimeError(f"{e['action']} – notify the customer instead of sending.")
     bdir = batch_dir(bid)
     subject, body = draft_parts(bdir, e)
     atts = [bdir / L["file"] for L in b["letters"] if L["client"] and L["client"]["company_name"] == e["company"]] \
