@@ -357,10 +357,11 @@ These cannot be opened, downloaded or emailed – please notify the customer(s) 
 <button class="btn">Send all active &amp; unsent</button></form></p></div>
 
 <div class="card"><h2>Letters ({{b.letters|length}})</h2><p class="muted">Orange rows need a human check. Downloaded: {{b.letters|selectattr("downloaded_at")|list|length}} of {{b.letters|length}} · opened (viewed only): {{b.letters|rejectattr("downloaded_at")|selectattr("opened_at")|list|length}} · untouched: {{b.letters|rejectattr("downloaded_at")|rejectattr("opened_at")|list|length}}. Green rows are downloaded – e.g. for manual upload to the portal.</p>
-<table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Downloaded</th><th>Review</th></tr>
+<table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Address on letter</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Downloaded</th><th>Review</th></tr>
 {% for L in b.letters %}<tr class="{{'review' if L.needs_review else ('sent' if L.downloaded_at else '')}}"{% if not L.siu_ok %} style="background:#fee2e2"{% endif %}><td>{{L.letter_id}}</td><td>{{L.pages|join('-')}}</td>
-<td>{{L.recipient_company}}{% if L.address %}<br><span class="muted" style="font-size:12px">{{L.address}}</span>{% endif %}</td><td>{% if L.client %}{{L.client.company_name}} <span class="muted">{{(L.match_score*100)|round|int}}%</span>{% else %}<b>— no match —</b>{% endif %}</td>
-<td>{{L.sender}}</td><td>{{L.letter_type}}</td><td><span class="pill {{L.urgency}}">{{L.urgency}}</span></td><td>{{L.summary}}</td>
+<td>{{L.recipient_company}}</td><td>{% if L.client %}{{L.client.company_name}} <span class="muted">{{(L.match_score*100)|round|int}}%</span>{% else %}<b>— no match —</b>{% endif %}</td>
+<td>{{L.sender}}</td><td>{{L.letter_type}}</td><td><span class="pill {{L.urgency}}">{{L.urgency}}</span></td>
+<td style="font-size:13px">{% if L.address %}{{L.address}}{% else %}<span class="muted">— (batch processed before this feature; re-upload the scan to capture addresses)</span>{% endif %}</td><td>{{L.summary}}</td>
 <td>{% if L.siu_ok %}<span class="pill active">✔</span>{% else %}<span class="pill high">MISSING</span>{% endif %}</td>
 <td>{% if L.siu_ok %}<a href="/batch/{{bid}}/file/{{L.file}}" target="_blank">open</a> · <a href="/batch/{{bid}}/download/{{L.file}}">download</a>{% else %}<span class="pill high">blocked</span>{% endif %}</td>
 <td>{% if L.downloaded_at %}<span class="pill active">✔ downloaded {{L.downloaded_at|replace("T"," ")}}</span>
