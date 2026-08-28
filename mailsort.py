@@ -363,7 +363,7 @@ def write_manifest(letters, emails, out_dir: Path, batch_tag: str, today: str):
         w = csv.writer(f)
         w.writerow(["batch", "letter_id", "pages", "recipient_as_printed", "address_as_printed", "matched_client", "client_id",
                     "match_score", "client_status", "client_email", "sender", "letter_type", "urgency",
-                    "summary", "file", "siu_office", "in_package", "needs_review"])
+                    "summary", "file", "siu_office", "in_package", "reseller", "kyc", "needs_review"])
         for L in letters:
             c = L.get("client") or {}
             w.writerow([batch_tag, L["letter_id"], "-".join(map(str, L["pages"])) if len(L["pages"]) > 1 else L["pages"][0],
@@ -371,7 +371,8 @@ def write_manifest(letters, emails, out_dir: Path, batch_tag: str, today: str):
                         f"{L['match_score']:.2f}", c.get("status", ""), c.get("email", ""), L["sender"],
                         L["letter_type"], L["urgency"], L["summary"], L.get("file", ""),
                         "yes" if L.get("siu_ok", True) else "MISSING",
-                        "yes" if L.get("in_package", True) else "EXCLUDED", L["needs_review"]])
+                        "yes" if L.get("in_package", True) else "EXCLUDED",
+                        c.get("reseller", "") or ("Direct" if c else ""), c.get("kyc", ""), L["needs_review"]])
 
     def esc(x):
         return html.escape(str(x))
@@ -457,6 +458,7 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
         if c and (c.get("status") or "").lower() not in STATUS_OK: reasons.append(f"status={c.get('status')}")
         if c and not c.get("email"): reasons.append("no email on file")
         if not L.get("siu_ok", True): reasons.append("SIU OFFICE MISSING")
+        if c and (c.get("kyc") or "").lower() == "no": reasons.append("KYC NOT DONE")
         L["in_package"] = letter_in_package(L, c)
         if not L["in_package"]: reasons.append(f"not in {c.get('package')} package")
         L["needs_review"] = "; ".join(reasons)
