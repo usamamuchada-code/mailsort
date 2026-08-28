@@ -387,7 +387,9 @@ HOME = """{% extends "base" %}{% block body %}
 {% for b in batches %}<tr><td>{{b.id}}</td><td>{{b.created}}</td><td>{{b.pdf}}<br><span class="muted">{{b.note}}</span></td>
 <td>{% if b.error %}<span style="color:#b91c1c">Failed: {{b.error}}</span>{% elif b.summary %}{{b.summary}}{% else %}{{b.msg}}{% endif %}</td>
 <td>{{b.sent}}/{{b.total_emails}} sent</td>
-<td><a class="btn small secondary" href="/batch/{{b.id}}">Open</a></td></tr>{% endfor %}</table>{% endif %}</div>
+<td><a class="btn small secondary" href="/batch/{{b.id}}">Open</a>
+<form method="post" action="/batch/{{b.id}}/delete" style="display:inline" onsubmit="if(!confirm('Delete batch {{b.id}} completely? Its split letters, drafts and history entries will be permanently removed. The client database and settings are NOT affected.'))return false; var pw=prompt('Enter the delete password:'); if(pw===null||pw==='')return false; this.pw.value=pw; return true;">
+<input type="hidden" name="pw"><button class="btn small secondary" style="color:#991b1b">Delete</button></form></td></tr>{% endfor %}</table>{% endif %}</div>
 <script>
 const d=document.getElementById('drop'),i=document.getElementById('file'),n=document.getElementById('fname');
 i.onchange=()=>{const fs=[...i.files]; n.textContent=fs.length?fs.map(f=>f.name).join(', ')+' ('+(fs.reduce((a,f)=>a+f.size,0)/1048576).toFixed(1)+' MB)':''};
@@ -828,6 +830,24 @@ def send_all(bid):
     save_batch(bid, b)
     flash(f"Sent {ok} email(s)." + (" Failed: " + "; ".join(fail) if fail else ""))
     return redirect(f"/batch/{bid}")
+
+
+DELETE_PASSWORD = os.environ.get("DELETE_PASSWORD", "askusama")
+
+
+@app.post("/batch/<bid>/delete")
+def delete_batch(bid):
+    import shutil
+    if request.form.get("pw", "") != DELETE_PASSWORD:
+        flash("Wrong delete password – batch NOT deleted.")
+        return redirect("/")
+    bdir = batch_dir(bid)
+    if not bdir.exists():
+        abort(404)
+    shutil.rmtree(bdir)
+    JOBS.pop(bid, None)
+    flash(f"Batch {bid} deleted – its letters, emails and history entries are gone.")
+    return redirect("/")
 
 
 @app.get("/clients")
