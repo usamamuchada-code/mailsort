@@ -49,7 +49,7 @@ def require_login():
 
 JOBS: dict[str, dict] = {}  # batch_id -> {"msg", "frac", "done", "error"}
 
-REQUIRED_COLS = ["client_id", "company_name", "contact_name", "email", "status", "package"]
+REQUIRED_COLS = ["client_id", "company_name", "contact_name", "email", "status", "package", "start_date"]
 PACKAGES = ["Basic", "Standard", "Premium"]
 
 
@@ -79,7 +79,10 @@ def read_clients() -> list[dict]:
     if not CLIENTS_CSV.exists():
         return []
     with open(CLIENTS_CSV, newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    for r in rows:
+        ms.apply_service_expiry(r)
+    return rows
 
 
 def write_clients(rows: list[dict]):
@@ -97,7 +100,9 @@ def parse_client_upload(raw: bytes) -> list[dict]:
     alias = {"company": "company_name", "name": "company_name", "client": "company_name",
              "contact": "contact_name", "email_address": "email", "e-mail": "email",
              "id": "client_id", "account_status": "status", "subscription_status": "status",
-             "plan": "package", "subscription": "package", "package_name": "package", "tier": "package"}
+             "plan": "package", "subscription": "package", "package_name": "package", "tier": "package",
+             "start": "start_date", "service_start": "start_date", "date_joined": "start_date",
+             "joined": "start_date", "renewal_date": "start_date", "subscription_start": "start_date"}
     out = []
     for r in rows:
         n = {}
@@ -112,6 +117,10 @@ def parse_client_upload(raw: bytes) -> list[dict]:
         n["package"] = (n.get("package") or "").strip().capitalize()
         if n["package"] and n["package"] not in PACKAGES:
             n["package"] = ""
+        n["start_date"] = n.get("start_date", "").strip()
+        d = ms.parse_date(n["start_date"])
+        if d:
+            n["start_date"] = d.isoformat()   # store consistently as YYYY-MM-DD
         out.append(n)
     missing = [c for c in ("company_name", "email") if not any(x.get(c) for x in out)]
     if missing:
@@ -172,7 +181,7 @@ def process_in_background(bid: str, pdf: Path, note: str):
         for L in r["letters"]:
             c = L.get("client") or {}
             letters.append({k: L[k] for k in ("letter_id", "pages", "recipient_company", "sender", "letter_type",
-                                              "urgency", "summary", "file", "needs_review", "match_score", "siu_ok")} | {"address": L.get("address", "")}
+                                              "urgency", "summary", "file", "needs_review", "match_score", "siu_ok")} | {"address": L.get("address", ""), "in_package": L.get("in_package", True)}
                            | {"client": {k: c.get(k, "") for k in REQUIRED_COLS} if c else None})
         emails = []
         for e in r["emails"]:
@@ -312,8 +321,8 @@ HOME = """{% extends "base" %}{% block body %}
 <div class="card"><h1>Upload a bulk scan</h1>
 {% if not clients %}<div class="flash">No client database yet – <a href="/clients">upload your client list</a> first.</div>{% endif %}
 <form method="post" action="/upload" enctype="multipart/form-data" id="f">
-<div class="drop" id="drop"><p><b>Drag the scanned PDF here</b> or</p>
-<input type="file" name="pdf" accept="application/pdf" required id="file"><p class="muted" id="fname"></p></div>
+<div class="drop" id="drop"><p><b>Drag the scanned PDF here</b> – or photos/images of letters (JPG, PNG); you can select several files and they become one batch, in order</p>
+<input type="file" name="pdf" accept="application/pdf,image/jpeg,image/png,image/webp,image/tiff,.pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff" multiple required id="file"><p class="muted" id="fname"></p></div>
 <label>Note (optional, e.g. "Morning post 26 Aug")</label><input type="text" name="note">
 <p><button class="btn" id="go" {% if not clients %}disabled{% endif %}>Upload &amp; sort</button>
 <span class="muted">Sorting runs in the background – you can leave this page.</span></p></form></div>
@@ -326,7 +335,7 @@ HOME = """{% extends "base" %}{% block body %}
 <td><a class="btn small secondary" href="/batch/{{b.id}}">Open</a></td></tr>{% endfor %}</table>{% endif %}</div>
 <script>
 const d=document.getElementById('drop'),i=document.getElementById('file'),n=document.getElementById('fname');
-i.onchange=()=>n.textContent=i.files[0]?i.files[0].name+' ('+(i.files[0].size/1048576).toFixed(1)+' MB)':'';
+i.onchange=()=>{const fs=[...i.files]; n.textContent=fs.length?fs.map(f=>f.name).join(', ')+' ('+(fs.reduce((a,f)=>a+f.size,0)/1048576).toFixed(1)+' MB)':''};
 d.ondragover=e=>{e.preventDefault();d.classList.add('over')};d.ondragleave=()=>d.classList.remove('over');
 d.ondrop=e=>{e.preventDefault();d.classList.remove('over');i.files=e.dataTransfer.files;i.onchange()};
 document.getElementById('f').onsubmit=()=>{document.getElementById('go').disabled=true;document.getElementById('go').textContent='Uploading…'};
@@ -361,13 +370,16 @@ You will be warned before opening, downloading or sending these – please notif
 <button class="btn">Send all active &amp; unsent</button></form></p></div>
 
 <div class="card"><h2>Letters ({{b.letters|length}})</h2><p class="muted">Orange rows need a human check. Downloaded: {{b.letters|selectattr("downloaded_at")|list|length}} of {{b.letters|length}} · opened (viewed only): {{b.letters|rejectattr("downloaded_at")|selectattr("opened_at")|list|length}} · untouched: {{b.letters|rejectattr("downloaded_at")|rejectattr("opened_at")|list|length}}. Green rows are downloaded – e.g. for manual upload to the portal.</p>
-<table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Address on letter</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Downloaded</th><th>Review</th></tr>
+<table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Address on letter</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Send</th><th>Downloaded</th><th>Review</th></tr>
 {% for L in b.letters %}<tr class="{{'review' if L.needs_review else ('sent' if L.downloaded_at else '')}}"{% if not L.siu_ok %} style="background:#fee2e2"{% endif %}><td>{{L.letter_id}}</td><td>{{L.pages|join('-')}}</td>
 <td>{{L.recipient_company}}</td><td>{% if L.client %}{{L.client.company_name}} <span class="muted">{{(L.match_score*100)|round|int}}%</span>{% else %}<b>— no match —</b>{% endif %}</td>
-<td>{{L.sender}}</td><td>{{L.letter_type}}</td><td><span class="pill {{L.urgency}}">{{L.urgency}}</span></td>
+<td>{{L.sender}}</td><td>{{L.letter_type}}{% if not L.in_package %}<br><span class="pill high">not in package</span>{% endif %}</td><td><span class="pill {{L.urgency}}">{{L.urgency}}</span></td>
 <td style="font-size:13px">{% if L.address %}{{L.address}}{% else %}<span class="muted">— (batch processed before this feature; re-upload the scan to capture addresses)</span>{% endif %}</td><td>{{L.summary}}</td>
 <td>{% if L.siu_ok %}<span class="pill active">✔</span>{% else %}<span class="pill high">MISSING</span>{% endif %}</td>
 <td>{% if L.siu_ok %}<a href="/batch/{{bid}}/file/{{L.file}}" target="_blank">open</a> · <a href="/batch/{{bid}}/download/{{L.file}}">download</a>{% else %}<a href="/batch/{{bid}}/file/{{L.file}}" target="_blank" onclick="return siuWarn('{{L.letter_id}}')">open</a> · <a href="/batch/{{bid}}/download/{{L.file}}" onclick="return siuWarn('{{L.letter_id}}')">download</a>{% endif %}</td>
+<td>{% if not loop.first %}<form method="post" action="/batch/{{bid}}/merge/{{L.letter_id}}" onsubmit="return confirm('Merge {{L.letter_id}} into the letter above? They will become ONE PDF. Use this when one document was wrongly split in two.')">
+<button class="btn small secondary" title="This letter is really a continuation of the one above">Merge ↑</button></form><br>{% endif %}{% if L.client and L.client.email %}<form method="post" action="/batch/{{bid}}/send_letter/{{L.letter_id}}" onsubmit="return {% if not L.siu_ok %}siuWarn('{{L.letter_id}}') && {% endif %}{% if not L.in_package %}confirm('NOTE: this letter is NOT covered by {{L.client.package or "the client"}}\'s package (non-government mail). Send it anyway?') && {% endif %}confirm('Email this letter to {{L.client.email}}?')">
+<button class="btn small">{{'Re-send' if L.emailed_at else 'Send'}}</button></form>{% if L.emailed_at %}<span class="muted" style="font-size:11px">✉ {{L.emailed_at|replace("T"," ")}}</span>{% endif %}{% else %}<span class="muted">no client</span>{% endif %}</td>
 <td>{% if L.downloaded_at %}<span class="pill active">✔ downloaded {{L.downloaded_at|replace("T"," ")}}</span>
 {% elif L.opened_at %}<span class="pill">👁 opened ×{{L.opens or 1}} · {{L.opened_at|replace("T"," ")}}</span>
 {% else %}<span class="muted">not yet</span>{% endif %}</td><td>{{L.needs_review}}</td></tr>{% endfor %}</table></div>
@@ -382,23 +394,28 @@ EMAIL = """{% extends "base" %}{% block body %}<div class="card"><h1>Email previ
 CLIENTS = """{% extends "base" %}{% block body %}
 <div class="card"><h1>Client database</h1>
 <p class="muted">Upload a CSV exported from your portal. It <b>replaces</b> the current list. Headers: <code>client_id, company_name, contact_name, email, status, package</code>
-(package = Basic / Standard / Premium; columns named "plan" or "subscription" are understood too)
+(package = Basic / Standard / Premium; start_date = when the client's service year began, e.g. 2026-03-01 or 01/03/2026.
+An <b>active</b> client is automatically shown and treated as <b>overdue</b> once a year has passed since their start date –
+update the start date when they renew.)
 (status = active / overdue / suspended / cancelled). Only <b>active</b> clients are emailed automatically.</p>
 <form method="post" action="/clients/upload" enctype="multipart/form-data"><input type="file" name="csv" accept=".csv,text/csv" required>
 <button class="btn">Upload / update database</button></form>
 <p class="muted">{{clients|length}} clients on file{% if mtime %} · last updated {{mtime}}{% endif %} · <a href="/clients/download">download current CSV</a></p></div>
 <div class="card"><h2>Add or edit one client</h2>
-<form method="post" action="/clients/save"><div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
+<form method="post" action="/clients/save"><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px">
 <div><label>Client ID</label><input type="text" name="client_id"></div><div><label>Company name *</label><input type="text" name="company_name" required></div>
 <div><label>Contact</label><input type="text" name="contact_name"></div><div><label>Email</label><input type="text" name="email"></div>
 <div><label>Status</label><input type="text" name="status" value="active"></div>
 <div><label>Package</label><select name="package" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px">
-<option value="">—</option><option>Basic</option><option>Standard</option><option>Premium</option></select></div></div>
+<option value="">—</option><option>Basic</option><option>Standard</option><option>Premium</option></select></div>
+<div><label>Service start</label><input type="date" name="start_date"></div></div>
 <p><button class="btn">Save</button> <span class="muted">Matching company name (case-insensitive) is updated; otherwise added.</span></p></form></div>
-<div class="card"><h2>Clients</h2><table><tr><th>ID</th><th>Company</th><th>Contact</th><th>Email</th><th>Status</th><th>Package</th></tr>
+<div class="card"><h2>Clients</h2><table><tr><th>ID</th><th>Company</th><th>Contact</th><th>Email</th><th>Status</th><th>Package</th><th>Service start</th><th>Renewal due</th></tr>
 {% for c in clients %}<tr><td>{{c.client_id}}</td><td>{{c.company_name}}</td><td>{{c.contact_name}}</td><td>{{c.email}}</td>
-<td><span class="pill {{'active' if c.status=='active' else 'hold'}}">{{c.status}}</span></td>
-<td>{% if c.package %}<span class="pill">{{c.package}}</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% endfor %}</table></div>{% endblock %}"""
+<td><span class="pill {{'active' if c.status=='active' else 'hold'}}">{{c.status}}</span>{% if c._auto_overdue %}<br><span class="muted" style="font-size:11px">auto – year ended</span>{% endif %}</td>
+<td>{% if c.package %}<span class="pill">{{c.package}}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+<td>{{c.start_date or "—"}}</td>
+<td>{% if c._expiry %}{{c._expiry}}{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 SETTINGS = """{% extends "base" %}{% block body %}<div class="card"><h1>Settings</h1><form method="post">
 <h2>AI</h2><label>Anthropic API key</label><input type="password" name="anthropic_api_key" value="{{c.anthropic_api_key}}">
@@ -501,17 +518,51 @@ def history():
     return render_template_string(HISTORY, batches=batches, sent=sent, downloaded=downloaded, found=found[:200], q=q)
 
 
+IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp")
+
+
+def build_input_pdf(files, bdir: Path) -> Path:
+    """Combine uploaded PDFs and images (in selection order) into a single PDF to process."""
+    first_name = secure_filename(files[0].filename) or "upload"
+    if len(files) == 1 and first_name.lower().endswith(".pdf"):
+        pdf = bdir / first_name
+        files[0].save(pdf)
+        return pdf
+    out = ms.fitz.open()
+    for f in files:
+        name = (f.filename or "").lower()
+        data = f.read()
+        if name.endswith(".pdf"):
+            src = ms.fitz.open(stream=data, filetype="pdf")
+            out.insert_pdf(src); src.close()
+        elif name.endswith(IMG_EXT):
+            img = ms.fitz.open(stream=data, filetype=name.rsplit(".", 1)[-1])
+            rect = img[0].rect
+            imgpdf = ms.fitz.open("pdf", img.convert_to_pdf()); img.close()
+            # scale page to A4 portrait proportions if the image is portrait, else keep its own ratio
+            page = out.new_page(width=595, height=max(595 * rect.height / max(rect.width, 1), 200))
+            page.show_pdf_page(page.rect, imgpdf, 0)
+            imgpdf.close()
+        # silently skip anything else
+    pdf = bdir / (Path(first_name).stem + "_combined.pdf")
+    out.save(pdf); out.close()
+    return pdf
+
+
 @app.post("/upload")
 def upload():
-    f = request.files.get("pdf")
-    if not f or not f.filename.lower().endswith(".pdf"):
-        flash("Please choose a PDF file."); return redirect("/")
+    files = [f for f in request.files.getlist("pdf") if f and f.filename]
+    ok = [f for f in files if f.filename.lower().endswith((".pdf",) + IMG_EXT)]
+    if not ok:
+        flash("Please choose a PDF or image files (JPG, PNG)."); return redirect("/")
     if not CLIENTS_CSV.exists():
         flash("Upload the client database first."); return redirect("/clients")
     bid = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
     bdir = batch_dir(bid); bdir.mkdir(parents=True)
-    pdf = bdir / secure_filename(f.filename)
-    f.save(pdf)
+    try:
+        pdf = build_input_pdf(ok, bdir)
+    except Exception as ex:
+        flash(f"Could not read the uploaded file(s): {ex}"); return redirect("/")
     JOBS[bid] = {"msg": "Queued…", "frac": 0.0, "done": False, "error": None, "pdf": pdf.name,
                  "note": request.form.get("note", "")}
     threading.Thread(target=process_in_background, args=(bid, pdf, request.form.get("note", "")), daemon=True).start()
@@ -600,7 +651,7 @@ def email_preview(bid, i):
     b = load_batch(bid) or abort(404)
     e = b["emails"][i]
     subject, body = draft_parts(batch_dir(bid), e)
-    atts = [Path(L["file"]).name for L in b["letters"] if L["client"] and L["client"]["company_name"] == e["company"]]
+    atts = [Path(L["file"]).name for L in b["letters"] if L["client"] and L["client"]["company_name"] == e["company"] and L.get("in_package", True)]
     return render_template_string(EMAIL, bid=bid, i=i, e=e, subject=subject, body=body, atts=atts)
 
 
@@ -608,7 +659,8 @@ def _send_one(bid: str, b: dict, i: int, cfg: dict):
     e = b["emails"][i]
     bdir = batch_dir(bid)
     subject, body = draft_parts(bdir, e)
-    atts = [bdir / L["file"] for L in b["letters"] if L["client"] and L["client"]["company_name"] == e["company"]] \
+    atts = [bdir / L["file"] for L in b["letters"]
+            if L["client"] and L["client"]["company_name"] == e["company"] and L.get("in_package", True)] \
         if cfg.get("attach_pdfs") else []
     send_email(cfg, e["email"], subject, body, atts)
     e["sent_at"] = dt.datetime.now().isoformat(timespec="seconds"); e["sent_to"] = e["email"]
@@ -636,6 +688,74 @@ def mark_sent(bid, i):
         e["manual_sent_at"] = dt.datetime.now().isoformat(timespec="seconds")
         flash(f"{e['company']} marked as sent by staff.")
     save_batch(bid, b)
+    return redirect(f"/batch/{bid}")
+
+
+@app.post("/batch/<bid>/merge/<lid>")
+def merge_letter(bid, lid):
+    """Merge letter <lid> into the letter above it (they are one document split in two)."""
+    b = load_batch(bid) or abort(404)
+    idx = next((i for i, x in enumerate(b["letters"]) if x["letter_id"] == lid), None)
+    if idx is None or idx == 0:
+        flash("Cannot merge the first letter – there is nothing above it.")
+        return redirect(f"/batch/{bid}")
+    bdir = batch_dir(bid)
+    prev, cur = b["letters"][idx - 1], b["letters"][idx]
+    src_pdf = bdir / b["pdf"]
+    if not src_pdf.exists():
+        flash("Original scan file no longer exists – cannot rebuild the PDF.")
+        return redirect(f"/batch/{bid}")
+    pages = sorted(set(prev["pages"] + cur["pages"]))
+    doc = ms.fitz.open(src_pdf)
+    new = ms.fitz.open()
+    for pg in pages:
+        new.insert_pdf(doc, from_page=pg - 1, to_page=pg - 1)
+    new.save(bdir / prev["file"])
+    new.close(); doc.close()
+    try:
+        (bdir / cur["file"]).unlink(missing_ok=True)
+    except OSError:
+        pass
+    prev["pages"] = pages
+    prev["summary"] = (prev.get("summary") or "")
+    prev["siu_ok"] = prev.get("siu_ok", True) or cur.get("siu_ok", False)
+    b["letters"].pop(idx)
+    # refresh the per-client email letter counts
+    for e in b["emails"]:
+        e["letters"] = sum(1 for L in b["letters"] if L.get("client") and L["client"]["company_name"] == e["company"])
+    b["summary"] = f"{len(b['letters'])} letters after merge – {b.get('summary','')}".split(" – ")[0] + " (" + b.get("pdf", "") + ")"
+    save_batch(bid, b)
+    flash(f"{lid} merged into {prev['letter_id']} – it is now one PDF of pages {'-'.join(map(str, pages))}.")
+    return redirect(f"/batch/{bid}")
+
+
+@app.post("/batch/<bid>/send_letter/<lid>")
+def send_letter(bid, lid):
+    b = load_batch(bid) or abort(404)
+    L = next((x for x in b["letters"] if x["letter_id"] == lid), None) or abort(404)
+    c = L.get("client")
+    if not c or not c.get("email"):
+        flash("This letter has no matched client email – add the client first.")
+        return redirect(f"/batch/{bid}")
+    cfg = load_config()
+    today = dt.date.today().strftime("%d/%m/%Y")
+    subject = f"New item of post received – {c['company_name']}"
+    body = (f"Dear {c.get('contact_name') or 'Client'},\n\n"
+            f"We have received an item of post for {c['company_name']} ({today}). "
+            f"It has been scanned and is attached to this email.\n\n"
+            f"  From: {L.get('sender') or 'unknown sender'}\n"
+            f"  Summary: {L.get('summary','')}"
+            + ("\n\n  This item looks time-sensitive – please review it promptly." if L.get('urgency')=='high' else '')
+            + f"\n\nYou can also view it in your client portal.\n\nKind regards,\n{cfg['sender_name']}\n")
+    atts = [batch_dir(bid) / L["file"]] if cfg.get("attach_pdfs") else []
+    try:
+        send_email(cfg, c["email"], subject, body, atts)
+        L["emailed_at"] = dt.datetime.now().isoformat(timespec="seconds")
+        L["emailed_to"] = c["email"]
+        save_batch(bid, b)
+        flash(f"Letter {lid} sent to {c['email']}.")
+    except Exception as ex:
+        flash(f"Could not send {lid}: {ex}")
     return redirect(f"/batch/{bid}")
 
 
@@ -681,6 +801,8 @@ def clients_save():
     new["package"] = (new.get("package") or "").capitalize()
     if new["package"] not in PACKAGES:
         new["package"] = ""
+    d = ms.parse_date(new.get("start_date", ""))
+    new["start_date"] = d.isoformat() if d else ""
     key = ms.normalise_name(new["company_name"])
     for r in rows:
         if ms.normalise_name(r["company_name"]) == key:

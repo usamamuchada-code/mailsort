@@ -87,8 +87,11 @@ list of client company names. Decide:
 - recipient_company: the company the letter is addressed to (as printed on the page). Use the
   closest match from the client list when the OCR clearly refers to one of them; otherwise the
   name as printed; "" if the page has no addressee (e.g. a continuation sheet or blank page).
-- is_continuation: true if this page is a later page of the SAME letter as the previous page
-  (no fresh address block / letterhead, page numbering like "2 of 3", same sender and subject).
+- is_continuation: true if this page is a later page of the SAME letter/document as the previous page.
+  Strong signals: NO fresh recipient address block, page numbering ("2 of 3", "Page 2"), same sender,
+  same subject or reference number, text that carries on mid-sentence, statement/table rows continuing,
+  terms and conditions or appendix pages. Many multi-page documents only show the address on page 1 –
+  a page with no recipient address that plausibly follows on is a continuation, NOT a new letter.
 - is_blank: true if the page is essentially empty (scanner separator, back of a sheet).
 - sender: organisation that sent the letter (HMRC, Companies House, a bank, a supplier, ...).
 - letter_type: one of official_government, bank_financial, legal, invoice_bill, marketing, personal, other.
@@ -168,7 +171,21 @@ def has_siu(text: str) -> bool:
 
 # ----------------------------------------------------------------------------- 3. group
 
-def group_letters(classified: list[dict]) -> list[dict]:
+def merge_orphans(letters: list[dict]) -> list[dict]:
+    """Safety net: a 'letter' with no addressee and no address block cannot be a real letter start –
+    merge it into the previous letter (the AI likely missed a continuation)."""
+    out = []
+    for L in letters:
+        if out and not (L.get("recipient_company") or "").strip() and not (L.get("address") or "").strip():
+            out[-1]["pages"].extend(L["pages"])
+            if not out[-1].get("summary") and L.get("summary"):
+                out[-1]["summary"] = L["summary"]
+        else:
+            out.append(L)
+    return out
+
+
+def group_letters(classified: list[dict], auto_merge: bool = True) -> list[dict]:
     letters, current = [], None
     for c in classified:
         if c.get("is_blank"):
@@ -180,6 +197,8 @@ def group_letters(classified: list[dict]) -> list[dict]:
                    "sender": c.get("sender", ""), "letter_type": c.get("letter_type", "other"),
                    "urgency": c.get("urgency", "normal"), "summary": c.get("summary", "")}
         letters.append(current)
+    if auto_merge:
+        letters = merge_orphans(letters)
     for i, L in enumerate(letters, 1):
         L["letter_id"] = f"L{i:03d}"
     return letters
@@ -187,11 +206,40 @@ def group_letters(classified: list[dict]) -> list[dict]:
 
 # ----------------------------------------------------------------------------- 4. match
 
+def parse_date(s: str):
+    """Accept YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY."""
+    s = (s or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d"):
+        try:
+            return dt.datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+SERVICE_DAYS = 365
+
+
+def apply_service_expiry(r: dict) -> dict:
+    """If an active client's start_date is over a year ago, treat them as overdue (automatic)."""
+    d = parse_date(r.get("start_date", ""))
+    r["_expiry"] = None
+    r["_auto_overdue"] = False
+    if d:
+        expiry = d + dt.timedelta(days=SERVICE_DAYS)
+        r["_expiry"] = expiry.isoformat()
+        if (r.get("status") or "").strip().lower() == "active" and dt.date.today() >= expiry:
+            r["status"] = "overdue"
+            r["_auto_overdue"] = True
+    return r
+
+
 def load_clients(path: Path) -> list[dict]:
     with open(path, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
     for r in rows:
         r["_norm"] = normalise_name(r.get("company_name", ""))
+        apply_service_expiry(r)
     return rows
 
 
@@ -250,6 +298,22 @@ Kind regards,
 
 STATUS_OK = {"active"}
 
+# Government senders – covered by every package. Basic/Standard get ONLY these.
+GOV_RE = re.compile(r"(hmrc|h\.?m\.?\s*revenue|revenue\s*(&|and)\s*customs|companies\s*house|hm\s*courts|"
+                    r"tribunal|county\s*court|magistrates|hmcts|gov\.uk|home\s*office|dvla|dwp|"
+                    r"insolvency\s*service|valuation\s*office|information\s*commissioner|\bico\b|"
+                    r"pensions?\s*regulator|border\s*force|uk\s*visas|hse\b|council\b)", re.I)
+
+
+def letter_in_package(L: dict, client: dict | None) -> bool:
+    """Premium (or no package set) = everything. Basic/Standard = official government mail only."""
+    if not client:
+        return True
+    pkg = (client.get("package") or "").strip().capitalize()
+    if pkg in ("", "Premium"):
+        return True
+    return L.get("letter_type") == "official_government" or bool(GOV_RE.search(L.get("sender") or ""))
+
 
 def build_emails(letters: list[dict], out_dir: Path, sender_name: str, today: str):
     by_client: dict[str, list[dict]] = {}
@@ -259,24 +323,38 @@ def build_emails(letters: list[dict], out_dir: Path, sender_name: str, today: st
     emails_dir = out_dir / "emails"
     emails_dir.mkdir(parents=True, exist_ok=True)
     results = []
-    for company, ls in by_client.items():
-        c = ls[0]["client"]
+    for company, all_ls in by_client.items():
+        c = all_ls[0]["client"]
+        ls = [L for L in all_ls if L.get("in_package", True)]
+        excluded = [L for L in all_ls if not L.get("in_package", True)]
         status = (c.get("status") or "").strip().lower()
         items = "\n".join(
             f"  {i}. From {L['sender'] or 'unknown sender'} – {L['summary']}"
             + ("  [URGENT]" if L["urgency"] == "high" else "")
             for i, L in enumerate(ls, 1))
         urgent = any(L["urgency"] == "high" for L in ls)
+        pkg = (c.get("package") or "your").strip()
+        upgrade_note = (f"You also received {len(excluded)} item(s) of post not covered by the {pkg} package "
+                        f"(e.g. non-government mail). Upgrade your package to have these scanned and sent to you.\n\n"
+                        if excluded else "")
         body = EMAIL_TEMPLATE.format(
             email=c.get("email", ""), n=len(ls), company=company,
             contact=c.get("contact_name") or "Client", date=today, items=items,
-            urgent_note="At least one item looks time-sensitive – please review it promptly.\n\n" if urgent else "",
+            urgent_note=("At least one item looks time-sensitive – please review it promptly.\n\n" if urgent else "") + upgrade_note,
             sender_name=sender_name)
         action = "SEND" if status in STATUS_OK else f"HOLD – account status is '{status or 'unknown'}'"
+        if not ls and excluded:
+            action = f"HOLD – all {len(excluded)} letter(s) outside {pkg} package (staff to decide)"
+            body = (f"Dear {c.get('contact_name') or 'Client'},\n\n"
+                    f"We have received {len(excluded)} item(s) of post for {company} today ({today}). "
+                    f"These items are not covered by your {pkg} package (e.g. non-government mail), so they have "
+                    f"not been scanned and sent. Upgrade your package to have all your post scanned and emailed to you, "
+                    f"or contact us to arrange collection or forwarding.\n\nKind regards,\n{sender_name}\n")
         path = emails_dir / f"{slug(company)}.txt"
         path.write_text(f"# ACTION: {action}\n\n{body}", encoding="utf-8")
         results.append({"company": company, "email": c.get("email", ""), "status": status,
-                        "action": action, "letters": len(ls), "file": str(path.relative_to(out_dir))})
+                        "action": action, "letters": len(ls), "excluded": len(excluded),
+                        "file": str(path.relative_to(out_dir))})
     return results
 
 
@@ -285,14 +363,15 @@ def write_manifest(letters, emails, out_dir: Path, batch_tag: str, today: str):
         w = csv.writer(f)
         w.writerow(["batch", "letter_id", "pages", "recipient_as_printed", "address_as_printed", "matched_client", "client_id",
                     "match_score", "client_status", "client_email", "sender", "letter_type", "urgency",
-                    "summary", "file", "siu_office", "needs_review"])
+                    "summary", "file", "siu_office", "in_package", "needs_review"])
         for L in letters:
             c = L.get("client") or {}
             w.writerow([batch_tag, L["letter_id"], "-".join(map(str, L["pages"])) if len(L["pages"]) > 1 else L["pages"][0],
                         L["recipient_company"], L.get("address", ""), c.get("company_name", ""), c.get("client_id", ""),
                         f"{L['match_score']:.2f}", c.get("status", ""), c.get("email", ""), L["sender"],
                         L["letter_type"], L["urgency"], L["summary"], L.get("file", ""),
-                        "yes" if L.get("siu_ok", True) else "MISSING", L["needs_review"]])
+                        "yes" if L.get("siu_ok", True) else "MISSING",
+                        "yes" if L.get("in_package", True) else "EXCLUDED", L["needs_review"]])
 
     def esc(x):
         return html.escape(str(x))
@@ -360,7 +439,8 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
     (out / "classification.json").write_text(json.dumps(classified, indent=1), encoding="utf-8")
 
     status("Grouping pages into letters …", 0.87)
-    letters = group_letters(classified)
+    # auto-merge orphan pages only in AI mode – the heuristic can't tell unknown companies from continuations
+    letters = group_letters(classified, auto_merge=(mode == "ai" or mode == "file"))
 
     status("Checking SIU office on each letter …", 0.89)
     page_text = {pg["page"]: pg["text"] for pg in pages}
@@ -377,6 +457,8 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
         if c and (c.get("status") or "").lower() not in STATUS_OK: reasons.append(f"status={c.get('status')}")
         if c and not c.get("email"): reasons.append("no email on file")
         if not L.get("siu_ok", True): reasons.append("SIU OFFICE MISSING")
+        L["in_package"] = letter_in_package(L, c)
+        if not L["in_package"]: reasons.append(f"not in {c.get('package')} package")
         L["needs_review"] = "; ".join(reasons)
 
     status("Splitting PDF …", 0.93)
