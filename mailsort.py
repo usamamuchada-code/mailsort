@@ -207,13 +207,27 @@ def group_letters(classified: list[dict], auto_merge: bool = True) -> list[dict]
 # ----------------------------------------------------------------------------- 4. match
 
 def parse_date(s: str):
-    """Accept YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY."""
+    """Very tolerant date reader: ISO, UK formats, Excel exports, month names, 2-digit years."""
     s = (s or "").strip()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d"):
+    if not s:
+        return None
+    s = s.split("T")[0].strip()               # drop time part of ISO timestamps
+    if " " in s and ":" in s:
+        s = s.split(" ")[0]                    # drop "12:00:00" style time
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d", "%Y.%m.%d",
+                "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
+                "%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%b-%y", "%d %b %y",
+                "%b %d %Y", "%B %d %Y", "%b %d, %Y", "%B %d, %Y", "%Y%m%d"):
         try:
-            return dt.datetime.strptime(s, fmt).date()
+            d = dt.datetime.strptime(s, fmt).date()
+            if d.year < 100:                   # 2-digit year came through oddly
+                d = d.replace(year=d.year + 2000)
+            return d
         except ValueError:
             pass
+    # Excel serial number (days since 1899-12-30), e.g. 46082
+    if s.isdigit() and 20000 < int(s) < 80000:
+        return dt.date(1899, 12, 30) + dt.timedelta(days=int(s))
     return None
 
 
