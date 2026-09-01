@@ -238,6 +238,7 @@ def process_in_background(bid: str, pdf: Path, note: str):
         if frac is not None:
             job["frac"] = frac
 
+    ms.TEMPLATES = load_templates()
     try:
         r = ms.run_batch(pdf, CLIENTS_CSV, batch_dir(bid), batch_tag=bid, sender_name=cfg["sender_name"],
                          api_key=cfg.get("anthropic_api_key") or None, model=cfg.get("model"), status=status)
@@ -263,6 +264,67 @@ def process_in_background(bid: str, pdf: Path, note: str):
     except Exception as e:  # surface the error in the UI
         job["error"] = f"{type(e).__name__}: {e}"
         job["done"] = True
+
+
+# ----------------------------------------------------------------------------- editable email templates
+
+TEMPLATES_FILE = DATA / "templates.json"
+
+# key: (section, label, placeholder help, default)
+TPL_DEFS = {
+    "batch_subject": ("Daily post email (per client)", "Subject", "{n} {company}", None),
+    "batch_body": ("Daily post email (per client)", "Body", "{contact} {company} {n} {date} {items} {urgent_note} {upgrade_note} {sender_name}", None),
+    "urgent_note": ("Daily post email (per client)", "Urgent note (inserted when a letter is time-sensitive)", "none", None),
+    "upgrade_note": ("Daily post email (per client)", "Package upgrade note (inserted when letters are outside the package)", "{n_excluded} {package}", None),
+    "excluded_body": ("Daily post email (per client)", "Body when ALL letters are outside the package", "{contact} {company} {n_excluded} {package} {date} {sender_name}", None),
+    "letter_subject": ("Single letter email", "Subject", "{company}", "New item of post received – {company}"),
+    "letter_body": ("Single letter email", "Body", "{contact} {company} {date} {sender} {summary} {urgent_note} {sender_name}",
+        "Dear {contact},\n\nWe have received an item of post for {company} ({date}). It has been scanned and is attached to this email.\n\n  From: {sender}\n  Summary: {summary}{urgent_note}\n\nYou can also view it in your client portal.\n\nKind regards,\n{sender_name}\n"),
+    "issue_kyc": ("Issue paragraphs (used in issue & compliance emails)", "KYC incomplete", "{login_url}",
+        "Identity verification (KYC) for your account is incomplete. Please log in to {login_url} and provide the required KYC documents."),
+    "issue_siu": ("Issue paragraphs (used in issue & compliance emails)", "SIU office missing", "{n} {ids}",
+        "{n} letter(s) arrived WITHOUT your SIU office in the address{ids}. Please update your registered address with all authorities, banks and vendors (HMRC, Companies House, suppliers, etc.) so that it always includes your SIU office."),
+    "issue_renewal": ("Issue paragraphs (used in issue & compliance emails)", "Service expired / renewal", "{site}",
+        "Your service period has expired and requires renewal. Please visit {site} and speak to our chat support to renew your subscription."),
+    "issue_status": ("Issue paragraphs (used in issue & compliance emails)", "Account suspended / cancelled", "{status}",
+        "Your account is currently marked as {status}. Please contact us to reactivate your service so we can continue handling your post."),
+    "issue_package": ("Issue paragraphs (used in issue & compliance emails)", "Letters outside package", "{n} {package}",
+        "{n} item(s) of post received are not covered by the {package} package (non-government mail). Upgrade your package to have all post scanned and emailed to you."),
+    "issues_subject": ("Batch issues email (⚠ Report issues button)", "Subject", "{company}",
+        "Action required – issues with your mail service ({company})"),
+    "issues_body": ("Batch issues email (⚠ Report issues button)", "Body", "{contact} {date} {issues} {sender_name}",
+        "Dear {contact},\n\nWhile processing your post today ({date}) we noticed the following issue(s) with your account or incoming mail that need your attention:\n\n{issues}\n\nPlease resolve the above, or reply to this email if you have any questions – we are happy to help.\n\nKind regards,\n{sender_name}\n"),
+    "compliance_subject": ("Compliance notice (whole client base)", "Subject", "{company}",
+        "IMPORTANT – action required on your business address service ({company})"),
+    "compliance_body": ("Compliance notice (whole client base)", "Body", "{contact} {company} {issues} {site} {sender_name}",
+        "Dear {contact},\n\nThis is an important notice regarding the business address service for {company}.\n\nYour incoming letters CANNOT be processed and forwarded until the following is resolved:\n\n{issues}\n\nOnce resolved, processing of your post will resume as normal. If you have any questions, please reply to this email or contact our support team via {site}.\n\nKind regards,\n{sender_name}\n"),
+    "reseller_subject": ("Reseller renewal reminder", "Subject", "{n} {days}",
+        "Renewals due within {days} days – {n} client(s)"),
+    "reseller_body": ("Reseller renewal reminder", "Body", "{reseller} {lines} {portal} {sender_name}",
+        "Dear {reseller},\n\nThe business-address service for the following client(s) of yours is due for renewal:\n\n{lines}\n\nPlease renew these subscriptions via {portal} before the due date to avoid any interruption to their mail service.\n\nKind regards,\n{sender_name}\n"),
+}
+
+
+def tpl_default(key: str) -> str:
+    d = TPL_DEFS[key][3]
+    return d if d is not None else ms.DEFAULTS[key]
+
+
+def load_templates() -> dict:
+    stored = {}
+    try:
+        stored = json.loads(TEMPLATES_FILE.read_text())
+    except Exception:
+        pass
+    return {k: (stored.get(k) or tpl_default(k)) for k in TPL_DEFS}
+
+
+def get_t(key: str) -> str:
+    return load_templates()[key]
+
+
+render = None  # set below after ms import is certain
+render = ms.render
 
 
 # ----------------------------------------------------------------------------- reseller renewal reminders
@@ -320,12 +382,10 @@ def send_renewal_reminders(manual_reseller: str | None = None) -> tuple[int, lis
         def _left(c):
             return " (OVERDUE)" if c["_days_left"] < 0 else f" ({c['_days_left']} days)"
         lines = "\n".join(f"  - {c['company_name']} – renewal due {c['_expiry']}" + _left(c) for c in cs)
-        subject = f"Renewals due within {REMIND_DAYS} days – {len(cs)} client(s)"
-        body = (f"Dear {reseller},\n\n"
-                f"The business-address service for the following client(s) of yours is due for renewal:\n\n"
-                f"{lines}\n\n"
-                f"Please renew these subscriptions via {PORTAL_URL} before the due date to avoid any "
-                f"interruption to their mail service.\n\nKind regards,\n{cfg['sender_name']}\n")
+        fields = dict(reseller=reseller, lines=lines, portal=PORTAL_URL, days=REMIND_DAYS,
+                      n=len(cs), sender_name=cfg["sender_name"])
+        subject = render(get_t("reseller_subject"), **fields)
+        body = render(get_t("reseller_body"), **fields)
         try:
             send_email(cfg, to, subject, body, [])
             now = dt.datetime.now().isoformat(timespec="seconds")
@@ -360,6 +420,81 @@ def _start_reminder_thread():
     if not _reminder_thread_started:
         _reminder_thread_started = True
         threading.Thread(target=_reminder_loop, daemon=True).start()
+
+
+# ----------------------------------------------------------------------------- compliance notices (whole client base)
+
+NOTICES_FILE = DATA / "compliance_notices.json"
+LOGIN_URL = "https://startitup.global/account/login"
+SITE_URL = "www.startitup.global"
+
+
+def siu_missing_by_company() -> dict:
+    """company -> number of letters across ALL batches that arrived without the SIU office."""
+    counts: dict[str, int] = {}
+    if BATCHES.exists():
+        for d in BATCHES.iterdir():
+            b = load_batch(d.name) if d.is_dir() else None
+            for L in (b or {}).get("letters", []):
+                c = L.get("client")
+                if c and not L.get("siu_ok", True):
+                    counts[c["company_name"]] = counts.get(c["company_name"], 0) + 1
+    return counts
+
+
+def compliance_issues(c: dict, siu_counts: dict) -> list[str]:
+    issues = []
+    if (c.get("kyc") or "").lower() == "no":
+        issues.append(render(get_t("issue_kyc"), login_url=LOGIN_URL))
+    if (c.get("status") or "").lower() == "overdue":
+        issues.append(render(get_t("issue_renewal"), site=SITE_URL))
+    n = siu_counts.get(c.get("company_name", ""), 0)
+    if n:
+        issues.append(render(get_t("issue_siu"), n=n, ids=""))
+    return issues
+
+
+def compliance_list() -> list[dict]:
+    siu_counts = siu_missing_by_company()
+    notices = json.loads(NOTICES_FILE.read_text()) if NOTICES_FILE.exists() else {}
+    out = []
+    for c in read_clients():
+        issues = compliance_issues(c, siu_counts)
+        if issues:
+            c["_issues"] = issues
+            c["_last_notice"] = (notices.get(c["company_name"]) or {}).get("sent_at", "")[:16].replace("T", " ")
+            out.append(c)
+    return out
+
+
+def compliance_email(c: dict, cfg: dict) -> tuple[str, str]:
+    lines = "\n\n".join(f"{i}. {x}" for i, x in enumerate(c["_issues"], 1))
+    fields = dict(company=c["company_name"], contact=c.get("contact_name") or "Client",
+                  issues=lines, site=SITE_URL, sender_name=cfg["sender_name"])
+    return render(get_t("compliance_subject"), **fields), render(get_t("compliance_body"), **fields)
+
+
+def send_compliance(companies: list[str] | None = None) -> tuple[int, list[str]]:
+    """Send the compliance notice to the given companies (or every affected client if None)."""
+    cfg = load_config()
+    notices = json.loads(NOTICES_FILE.read_text()) if NOTICES_FILE.exists() else {}
+    sent, errors = 0, []
+    for c in compliance_list():
+        if companies is not None and c["company_name"] not in companies:
+            continue
+        if not c.get("email"):
+            errors.append(f"{c['company_name']}: no email address on file")
+            continue
+        subject, body = compliance_email(c, cfg)
+        try:
+            send_email(cfg, c["email"], subject, body, [])
+            notices[c["company_name"]] = {"sent_at": dt.datetime.now().isoformat(timespec="seconds"),
+                                          "to": c["email"], "issues": len(c["_issues"])}
+            sent += 1
+        except Exception as ex:
+            errors.append(f"{c['company_name']}: {ex}")
+    NOTICES_FILE.write_text(json.dumps(notices, indent=1))
+    return sent, errors
 
 
 # ----------------------------------------------------------------------------- email sending
@@ -433,25 +568,18 @@ def client_issues(b: dict, e: dict) -> list[str]:
     issues = []
     missing = [L["letter_id"] for L in ls if not L.get("siu_ok", True)]
     if missing:
-        issues.append(f"{len(missing)} letter(s) arrived WITHOUT your SIU office in the address "
-                      f"({', '.join(missing)}). Please ask all senders to include your SIU office "
-                      f"in your address – post without it cannot be processed reliably.")
+        issues.append(render(get_t("issue_siu"), n=len(missing), ids=" (" + ", ".join(missing) + ")"))
     status = (c.get("status") or e.get("status") or "").lower()
     if status == "overdue":
-        issues.append("Your service period appears to have ended and your account is overdue. "
-                      "Please renew your subscription to continue receiving your post without interruption.")
+        issues.append(render(get_t("issue_renewal"), site=SITE_URL))
     elif status in ("suspended", "cancelled"):
-        issues.append(f"Your account is currently marked as {status}. Please contact us to reactivate "
-                      "your service so we can continue handling your post.")
+        issues.append(render(get_t("issue_status"), status=status))
     if (c.get("kyc") or "").lower() == "no":
-        issues.append("Our identity verification (KYC) for your account is not yet complete. "
-                      "Please send us the required identification documents – we are unable to provide "
-                      "full service until verification is finished.")
+        issues.append(render(get_t("issue_kyc"), login_url=LOGIN_URL))
     excluded = [L["letter_id"] for L in ls if not L.get("in_package", True)]
     if excluded:
         pkg = c.get("package") or e.get("package") or "your"
-        issues.append(f"{len(excluded)} item(s) of post received are not covered by the {pkg} package "
-                      f"(non-government mail). Upgrade your package to have all post scanned and emailed to you.")
+        issues.append(render(get_t("issue_package"), n=len(excluded), package=pkg))
     return issues
 
 
@@ -459,13 +587,10 @@ def issues_email_parts(b: dict, e: dict, cfg: dict) -> tuple[str, str]:
     issues = client_issues(b, e)
     today = dt.date.today().strftime("%d/%m/%Y")
     lines = "\n\n".join(f"{i}. {x}" for i, x in enumerate(issues, 1))
-    subject = f"Action required – issues with your mail service ({e['company']})"
-    body = (f"Dear {next((L['client'].get('contact_name') for L in b['letters'] if L.get('client') and L['client']['company_name']==e['company']), '') or 'Client'},\n\n"
-            f"While processing your post today ({today}) we noticed the following issue(s) with your "
-            f"account or incoming mail that need your attention:\n\n{lines}\n\n"
-            f"Please resolve the above, or reply to this email if you have any questions – "
-            f"we are happy to help.\n\nKind regards,\n{cfg['sender_name']}\n")
-    return subject, body
+    contact = next((L["client"].get("contact_name") for L in b["letters"]
+                    if L.get("client") and L["client"]["company_name"] == e["company"]), "") or "Client"
+    fields = dict(company=e["company"], contact=contact, date=today, issues=lines, sender_name=cfg["sender_name"])
+    return render(get_t("issues_subject"), **fields), render(get_t("issues_body"), **fields)
 
 
 def draft_parts(bdir: Path, e: dict) -> tuple[str, str]:
@@ -518,7 +643,7 @@ function siuWarn(ids){
 }
 </script></head><body>
 <header><a class="brand" href="/"><img src="data:image/png;base64,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" alt="Startitup"><span>Mail Room</span></a>
-<a href="/">Batches</a><a href="/history">Search &amp; History</a><a href="/clients">Client database</a><a href="/settings">Settings</a><a href="/logout" style="margin-left:auto">Sign out</a><span style="color:#c4c4c4;font-size:11px">v28i</span></header>
+<a href="/">Batches</a><a href="/history">Search &amp; History</a><a href="/clients">Client database</a><a href="/templates">Templates</a><a href="/settings">Settings</a><a href="/logout" style="margin-left:auto">Sign out</a><span style="color:#c4c4c4;font-size:11px">v28k</span></header>
 <main>{% with m = get_flashed_messages() %}{% for x in m %}<div class="flash">{{x}}</div>{% endfor %}{% endwith %}
 {% block body %}{% endblock %}</main></body></html>"""
 
@@ -610,6 +735,26 @@ ISSUES = """{% extends "base" %}{% block body %}<div class="card"><h1>Issues ema
 <button class="btn" {% if not e.email %}disabled{% endif %}>Send issues email</button></form>
 {% if e.issues_sent_at %}<span class="muted">Already sent {{e.issues_sent_at|replace("T"," ")}} – sending again is allowed.</span>{% endif %}</p></div>{% endblock %}"""
 
+COMPLIANCE = """{% extends "base" %}{% block body %}
+<div class="card"><h1>Compliance notices</h1>
+<p class="muted">Every client in the database with an outstanding issue – KYC pending, service expired, or letters received
+without the SIU office (from all processed batches). The email warns that their post cannot be processed until resolved.
+"Last sent" shows when they were last notified, so you can avoid repeat emails.</p>
+{% if not affected %}<p><b>No clients currently have outstanding issues. 🎉</b></p>{% else %}
+<form method="post" action="/clients/compliance_send" onsubmit="return confirm('Send the compliance notice email to ALL {{affected|length}} affected client(s)?') && confirm('Second check – this emails {{affected|length}} customers at once. Continue?')">
+<p><button class="btn" style="background:#b91c1c">⚠ Send to all {{affected|length}} affected clients</button></p></form>
+<table><tr><th>Client</th><th>Email</th><th>Issues</th><th>Last sent</th><th></th></tr>
+{% for c in affected %}<tr>
+<td>{{c.company_name}}{% if c.reseller %}<br><span class="pill" style="background:#e0e7ff;color:#3730a3;font-size:11px">{{c.reseller}}</span>{% endif %}</td>
+<td>{{c.email or "— none —"}}</td>
+<td style="font-size:13px">{% for i in c._issues %}• {{i[:110]}}{% if i|length > 110 %}…{% endif %}<br>{% endfor %}</td>
+<td>{% if c._last_notice %}<span class="pill active">{{c._last_notice}}</span>{% else %}<span class="muted">never</span>{% endif %}</td>
+<td><details><summary class="btn small secondary" style="list-style:none;cursor:pointer">Preview</summary>
+<pre style="white-space:pre-wrap;background:#f9fafb;padding:10px;border-radius:8px;font-size:12px;max-width:520px">{{c._body}}</pre></details>
+<form method="post" action="/clients/compliance_send" onsubmit="return confirm('Send the compliance notice to {{c.email}}?')">
+<input type="hidden" name="company" value="{{c.company_name}}"><button class="btn small" {% if not c.email %}disabled{% endif %}>Send</button></form></td></tr>{% endfor %}</table>{% endif %}
+<p><a class="btn secondary" href="/clients">Back to client database</a></p></div>{% endblock %}"""
+
 CLIENTS = """{% extends "base" %}{% block body %}
 <div class="card"><h1>Client database</h1>
 <p class="muted">Upload a CSV exported from your portal. It <b>replaces</b> the current list. Headers: <code>client_id, company_name, contact_name, email, status, package</code>
@@ -619,7 +764,8 @@ update the start date when they renew. reseller = the reseller/partner this addr
 kyc = yes/no (aliases: done/pending) – whether identity checks are complete for this client.)
 (status = active / overdue / suspended / cancelled). Only <b>active</b> clients are emailed automatically.</p>
 <form method="post" action="/clients/upload" enctype="multipart/form-data"><input type="file" name="csv" accept=".csv,text/csv" required>
-<button class="btn">Upload / update database</button> <a class="btn secondary" href="/clients/sample">Download sample CSV</a></form>
+<button class="btn">Upload / update database</button> <a class="btn secondary" href="/clients/sample">Download sample CSV</a>
+<a class="btn" style="background:#b91c1c" href="/clients/compliance">⚠ Compliance notices</a></form>
 <p class="muted">{{clients|length}} clients on file{% if mtime %} · last updated {{mtime}}{% endif %} · <a href="/clients/download">download current CSV</a></p>
 {% set bad = clients|selectattr("start_date")|rejectattr("_expiry")|list %}{% if bad %}
 <div class="flash" style="background:#fee2e2;border-color:#fca5a5"><b>{{bad|length}} client(s) have a start date the system cannot read</b> (marked ⚠ below) – their renewal due date and automatic overdue cannot be calculated. Please use dates like 2026-03-01 or 01/03/2026 and re-upload.</div>{% endif %}</div>
@@ -651,6 +797,20 @@ kyc = yes/no (aliases: done/pending) – whether identity checks are complete fo
 <td>{% if c.kyc == "yes" %}<span class="pill active">✔ done</span>{% elif c.kyc == "no" %}<span class="pill high">pending</span>{% else %}<span class="muted">—</span>{% endif %}</td>
 <td>{% if c.start_date and not c._expiry %}<span class="pill high" title="This date could not be understood – use YYYY-MM-DD or DD/MM/YYYY">⚠ {{c.start_date}}</span>{% else %}{{c.start_date or "—"}}{% endif %}</td>
 <td>{% if c._expiry %}{{c._expiry}}{% if c._auto_overdue %} <span class="pill high">passed</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% endfor %}</table></div>{% endblock %}"""
+
+TEMPLATES_PAGE = """{% extends "base" %}{% block body %}<div class="card"><h1>Email templates</h1>
+<p class="muted">Every email the system sends, editable in one place. Words in curly brackets like <code>{company}</code>
+are filled in automatically when the email is sent – keep them exactly as written (you can move or remove them, but don't
+change the spelling inside the brackets). Changes take effect immediately for all future emails.</p>
+<form method="post">
+{% for section, items in sections.items() %}<h2 style="margin-top:26px">{{section}}</h2>
+{% for key, label, ph, value, is_subject in items %}
+<label>{{label}} <span class="muted" style="font-weight:400">– available: {{ph}}</span></label>
+{% if is_subject %}<input type="text" name="{{key}}" value="{{value}}">{% else %}<textarea name="{{key}}" rows="{{5 if value|length < 400 else 9}}" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;font-family:ui-monospace,monospace">{{value}}</textarea>{% endif %}
+{% endfor %}{% endfor %}
+<p style="margin-top:20px"><button class="btn">Save all templates</button>
+<button class="btn secondary" name="reset_all" value="1" onclick="return confirm('Reset ALL templates to their original wording? Your edits will be lost.')">Reset all to defaults</button></p>
+</form></div>{% endblock %}"""
 
 SETTINGS = """{% extends "base" %}{% block body %}<div class="card"><h1>Settings</h1><form method="post">
 <h2>AI</h2><label>Anthropic API key</label><input type="password" name="anthropic_api_key" value="{{c.anthropic_api_key}}">
@@ -699,7 +859,7 @@ HISTORY = """{% extends "base" %}{% block body %}
 
 app.jinja_loader = type("L", (), {"get_source": lambda self, env, name: (
     {"base": BASE, "home": HOME, "batch": BATCH, "email": EMAIL, "clients": CLIENTS, "settings": SETTINGS,
-     "history": HISTORY, "issues": ISSUES}[name], name, lambda: True)})()
+     "history": HISTORY, "issues": ISSUES, "compliance": COMPLIANCE, "templates": TEMPLATES_PAGE}[name], name, lambda: True)})()
 
 
 # ----------------------------------------------------------------------------- routes
@@ -1005,14 +1165,13 @@ def send_letter(bid, lid):
         return redirect(f"/batch/{bid}")
     cfg = load_config()
     today = dt.date.today().strftime("%d/%m/%Y")
-    subject = f"New item of post received – {c['company_name']}"
-    body = (f"Dear {c.get('contact_name') or 'Client'},\n\n"
-            f"We have received an item of post for {c['company_name']} ({today}). "
-            f"It has been scanned and is attached to this email.\n\n"
-            f"  From: {L.get('sender') or 'unknown sender'}\n"
-            f"  Summary: {L.get('summary','')}"
-            + ("\n\n  This item looks time-sensitive – please review it promptly." if L.get('urgency')=='high' else '')
-            + f"\n\nYou can also view it in your client portal.\n\nKind regards,\n{cfg['sender_name']}\n")
+    fields = dict(company=c["company_name"], contact=c.get("contact_name") or "Client", date=today,
+                  sender=L.get("sender") or "unknown sender", summary=L.get("summary", ""),
+                  urgent_note=("\n\n  This item looks time-sensitive – please review it promptly."
+                               if L.get("urgency") == "high" else ""),
+                  sender_name=cfg["sender_name"])
+    subject = render(get_t("letter_subject"), **fields)
+    body = render(get_t("letter_body"), **fields)
     atts = [batch_dir(bid) / L["file"]] if cfg.get("attach_pdfs") else []
     try:
         send_email(cfg, c["email"], subject, body, atts)
@@ -1094,6 +1253,26 @@ def remind_reseller(reseller):
     return redirect("/clients")
 
 
+@app.get("/clients/compliance")
+def compliance_page():
+    cfg = load_config()
+    affected = compliance_list()
+    for c in affected:
+        c["_subject"], c["_body"] = compliance_email(c, cfg)
+    return render_template_string(COMPLIANCE, affected=affected)
+
+
+@app.post("/clients/compliance_send")
+def compliance_send():
+    company = request.form.get("company") or None
+    sent, errors = send_compliance([company] if company else None)
+    msg = f"Compliance notice sent to {sent} client(s)."
+    if errors:
+        msg += " Problems: " + "; ".join(errors[:5]) + ("…" if len(errors) > 5 else "")
+    flash(msg)
+    return redirect("/clients/compliance")
+
+
 @app.post("/clients/save")
 def clients_save():
     rows = read_clients()
@@ -1134,6 +1313,31 @@ def clients_sample():
 @app.get("/clients/download")
 def clients_download():
     return send_from_directory(DATA, "clients.csv", as_attachment=True)
+
+
+@app.route("/templates", methods=["GET", "POST"])
+def templates_page():
+    if request.method == "POST":
+        if request.form.get("reset_all"):
+            try:
+                TEMPLATES_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
+            flash("All templates reset to their original wording.")
+            return redirect("/templates")
+        stored = {}
+        for k in TPL_DEFS:
+            v = (request.form.get(k) or "").replace("\r\n", "\n")
+            if v.strip() and v != tpl_default(k):
+                stored[k] = v
+        TEMPLATES_FILE.write_text(json.dumps(stored, indent=1))
+        flash("Templates saved – all future emails will use the new wording.")
+        return redirect("/templates")
+    cur = load_templates()
+    sections: dict = {}
+    for k, (section, label, ph, _d) in TPL_DEFS.items():
+        sections.setdefault(section, []).append((k, label, ph, cur[k], k.endswith("_subject") or k == "batch_subject"))
+    return render_template_string(TEMPLATES_PAGE, sections=sections)
 
 
 @app.route("/settings", methods=["GET", "POST"])

@@ -295,20 +295,46 @@ def split_letters(pdf_path: Path, letters: list[dict], out_dir: Path, batch_tag:
 
 # ----------------------------------------------------------------------------- 6. notify
 
-EMAIL_TEMPLATE = """To: {email}
-Subject: {n} new item(s) of post received – {company}
+# --- editable email templates: the app can override these via the TEMPLATES dict (see /templates page)
+TEMPLATES: dict = {}
 
-Dear {contact},
 
-We have received {n} item(s) of post for {company} today ({date}). They have been scanned and
-uploaded to your client portal.
+class _SafeDict(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
 
-{items}
-{urgent_note}You can view and download the scans by logging in to your portal.
 
-Kind regards,
-{sender_name}
-"""
+def render(text: str, **kw) -> str:
+    try:
+        return text.format_map(_SafeDict(**kw))
+    except Exception:
+        return text  # a malformed template must never break sending
+
+
+DEFAULTS = {
+    "batch_subject": "{n} new item(s) of post received – {company}",
+    "batch_body": (
+        "Dear {contact},\n\n"
+        "We have received {n} item(s) of post for {company} today ({date}). They have been scanned and\n"
+        "uploaded to your client portal.\n\n{items}\n"
+        "{urgent_note}{upgrade_note}"
+        "You can view and download the scans by logging in to your portal.\n\n"
+        "Kind regards,\n{sender_name}\n"),
+    "urgent_note": "At least one item looks time-sensitive – please review it promptly.\n\n",
+    "upgrade_note": ("You also received {n_excluded} item(s) of post not covered by the {package} package "
+                     "(e.g. non-government mail). Upgrade your package to have these scanned and sent to you.\n\n"),
+    "excluded_body": (
+        "Dear {contact},\n\n"
+        "We have received {n_excluded} item(s) of post for {company} today ({date}). These items are not covered "
+        "by your {package} package (e.g. non-government mail), so they have not been scanned and sent. "
+        "Upgrade your package to have all your post scanned and emailed to you, or contact us to arrange "
+        "collection or forwarding.\n\nKind regards,\n{sender_name}\n"),
+}
+
+
+def tget(key: str) -> str:
+    return TEMPLATES.get(key) or DEFAULTS.get(key, "")
+
 
 STATUS_OK = {"active"}
 
@@ -348,22 +374,19 @@ def build_emails(letters: list[dict], out_dir: Path, sender_name: str, today: st
             for i, L in enumerate(ls, 1))
         urgent = any(L["urgency"] == "high" for L in ls)
         pkg = (c.get("package") or "your").strip()
-        upgrade_note = (f"You also received {len(excluded)} item(s) of post not covered by the {pkg} package "
-                        f"(e.g. non-government mail). Upgrade your package to have these scanned and sent to you.\n\n"
-                        if excluded else "")
-        body = EMAIL_TEMPLATE.format(
-            email=c.get("email", ""), n=len(ls), company=company,
-            contact=c.get("contact_name") or "Client", date=today, items=items,
-            urgent_note=("At least one item looks time-sensitive – please review it promptly.\n\n" if urgent else "") + upgrade_note,
-            sender_name=sender_name)
+        upgrade_note = render(tget("upgrade_note"), n_excluded=len(excluded), package=pkg) if excluded else ""
+        fields = dict(n=len(ls), company=company, contact=c.get("contact_name") or "Client",
+                      date=today, items=items, sender_name=sender_name,
+                      urgent_note=tget("urgent_note") if urgent else "", upgrade_note=upgrade_note)
+        subject = render(tget("batch_subject"), **fields)
+        body = f"To: {c.get('email', '')}\nSubject: {subject}\n\n" + render(tget("batch_body"), **fields)
         action = "SEND" if status in STATUS_OK else f"HOLD – account status is '{status or 'unknown'}'"
         if not ls and excluded:
             action = f"HOLD – all {len(excluded)} letter(s) outside {pkg} package (staff to decide)"
-            body = (f"Dear {c.get('contact_name') or 'Client'},\n\n"
-                    f"We have received {len(excluded)} item(s) of post for {company} today ({today}). "
-                    f"These items are not covered by your {pkg} package (e.g. non-government mail), so they have "
-                    f"not been scanned and sent. Upgrade your package to have all your post scanned and emailed to you, "
-                    f"or contact us to arrange collection or forwarding.\n\nKind regards,\n{sender_name}\n")
+            subject = render(tget("batch_subject"), **fields)
+            body = f"To: {c.get('email', '')}\nSubject: {subject}\n\n" + render(
+                tget("excluded_body"), n_excluded=len(excluded), company=company, date=today,
+                contact=c.get("contact_name") or "Client", package=pkg, sender_name=sender_name)
         path = emails_dir / f"{slug(company)}.txt"
         path.write_text(f"# ACTION: {action}\n\n{body}", encoding="utf-8")
         results.append({"company": company, "email": c.get("email", ""), "status": status,
