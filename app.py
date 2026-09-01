@@ -104,7 +104,7 @@ def require_login():
 
 JOBS: dict[str, dict] = {}  # batch_id -> {"msg", "frac", "done", "error"}
 
-REQUIRED_COLS = ["client_id", "company_name", "contact_name", "email", "status", "package", "start_date", "reseller", "reseller_email", "kyc"]
+REQUIRED_COLS = ["client_id", "company_name", "contact_name", "email", "status", "package", "start_date", "reseller", "reseller_email", "kyc", "siu", "address"]
 PACKAGES = ["Basic", "Standard", "Premium"]
 
 
@@ -160,7 +160,9 @@ def parse_client_upload(raw: bytes) -> list[dict]:
              "joined": "start_date", "renewal_date": "start_date", "subscription_start": "start_date",
              "reseller_name": "reseller", "partner": "reseller", "agent": "reseller", "introducer": "reseller",
              "kyc_done": "kyc", "kyc_status": "kyc", "kyc_completed": "kyc", "id_verified": "kyc",
-             "partner_email": "reseller_email", "agent_email": "reseller_email"}
+             "partner_email": "reseller_email", "agent_email": "reseller_email",
+             "unit": "siu", "unit_number": "siu", "siu_number": "siu", "office_number": "siu", "suite": "siu",
+             "client_address": "address", "registered_address": "address", "full_address": "address"}
     out = []
     for r in rows:
         n = {}
@@ -175,6 +177,7 @@ def parse_client_upload(raw: bytes) -> list[dict]:
         n["package"] = (n.get("package") or "").strip().capitalize()
         if n["package"] and n["package"] not in PACKAGES:
             n["package"] = ""
+        n["siu"] = (n.get("siu") or "").strip().upper()
         kv = (n.get("kyc") or "").strip().lower()
         n["kyc"] = "yes" if kv in ("yes", "y", "done", "true", "1", "complete", "completed", "verified", "ok") \
             else ("no" if kv in ("no", "n", "pending", "false", "0", "incomplete", "not done", "outstanding") else "")
@@ -246,16 +249,25 @@ def process_in_background(bid: str, pdf: Path, note: str):
         for L in r["letters"]:
             c = L.get("client") or {}
             letters.append({k: L[k] for k in ("letter_id", "pages", "recipient_company", "sender", "letter_type",
-                                              "urgency", "summary", "file", "needs_review", "match_score", "siu_ok")} | {"address": L.get("address", ""), "in_package": L.get("in_package", True)}
+                                              "urgency", "summary", "file", "needs_review", "match_score", "siu_ok")} | {"address": L.get("address", ""), "in_package": L.get("in_package", True),
+                              "unit": L.get("unit", ""), "matched_by": L.get("matched_by", ""), "unit_mismatch": L.get("unit_mismatch", False),
+                              "match_state": L.get("match_state", "verified"), "match_note": L.get("match_note", ""),
+                              "suggested_client": L.get("suggested_client", "")}
                            | {"client": {k: c.get(k, "") for k in REQUIRED_COLS} if c else None})
         emails = []
         for e in r["emails"]:
             missing = [L["letter_id"] for L in r["letters"] if L.get("client") and L["client"]["company_name"] == e["company"] and not L.get("siu_ok", True)]
+            mismatches = [L["letter_id"] for L in r["letters"] if L.get("client") and L["client"]["company_name"] == e["company"] and L.get("unit_mismatch")]
+            unverified = [L["letter_id"] for L in r["letters"] if L.get("client") and L["client"]["company_name"] == e["company"] and L.get("match_state") == "review"]
+            if mismatches:
+                e = {**e, "action": f"HOLD – UNIT MISMATCH on {', '.join(mismatches)} (check before sending!)"}
+            elif unverified:
+                e = {**e, "action": f"HOLD – match not verified on {', '.join(unverified)} (confirm the client first)"}
             pkg = next((L["client"].get("package", "") for L in r["letters"]
                         if L.get("client") and L["client"]["company_name"] == e["company"]), "")
             res = next((L["client"].get("reseller", "") for L in r["letters"]
                         if L.get("client") and L["client"]["company_name"] == e["company"]), "")
-            emails.append({**e, "package": pkg, "reseller": res, "siu_missing": missing,
+            emails.append({**e, "package": pkg, "reseller": res, "siu_missing": missing, "unit_mismatch_ids": mismatches,
                            "sent_at": None, "sent_to": None, "manual_sent_at": None})
         save_batch(bid, {"id": bid, "created": dt.datetime.now().isoformat(timespec="seconds"), "note": note,
                          "pdf": pdf.name, "pages": r["pages"], "mode": r["mode"], "summary": r["summary"],
@@ -643,7 +655,7 @@ function siuWarn(ids){
 }
 </script></head><body>
 <header><a class="brand" href="/"><img src="data:image/png;base64,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" alt="Startitup"><span>Mail Room</span></a>
-<a href="/">Batches</a><a href="/history">Search &amp; History</a><a href="/clients">Client database</a><a href="/templates">Templates</a><a href="/settings">Settings</a><a href="/logout" style="margin-left:auto">Sign out</a><span style="color:#c4c4c4;font-size:11px">v28k</span></header>
+<a href="/">Batches</a><a href="/history">Search &amp; History</a><a href="/clients">Client database</a><a href="/templates">Templates</a><a href="/audit">Audit</a><a href="/settings">Settings</a><a href="/logout" style="margin-left:auto">Sign out</a><span style="color:#c4c4c4;font-size:11px">v28s</span></header>
 <main>{% with m = get_flashed_messages() %}{% for x in m %}<div class="flash">{{x}}</div>{% endfor %}{% endwith %}
 {% block body %}{% endblock %}</main></body></html>"""
 
@@ -682,9 +694,21 @@ document.getElementById('msg').textContent=r.msg;document.getElementById('bar').
 {% else %}
 <p>{{b.summary}} &middot; {{b.pages}} pages &middot; processed from <b>{{b.pdf}}</b> {{b.created}}
 {% if b.mode!='ai' %}&middot; <span class="pill high">classified WITHOUT AI ({{b.mode}}) – check Settings</span>{% endif %}</p>
+{% set mm = b.letters|selectattr("unit_mismatch")|list %}{% if mm %}<div class="flash" style="background:#fee2e2;border-color:#dc2626"><b>⚠ POSSIBLE WRONG-CLIENT MATCH on {{mm|length}} letter(s):</b>
+{% for L in mm %}{{L.letter_id}} (letter shows unit {{L.unit}} but was name-matched to {{L.client.company_name}}, unit {{L.client.siu or "?"}}){% if not loop.last %}; {% endif %}{% endfor %}.
+Their emails are on HOLD – open each letter and verify the correct client before sending anything.</div>{% endif %}
 {% set missing = b.letters|rejectattr("siu_ok")|list %}{% if missing %}<div class="flash" style="background:#fee2e2;border-color:#fca5a5"><b>SIU office missing on {{missing|length}} letter(s):</b>
 {% for L in missing %}{{L.letter_id}} ({{L.client.company_name if L.client else L.recipient_company or "unknown addressee"}}){% if not loop.last %}, {% endif %}{% endfor %}.
 You will be warned before opening, downloading or sending these – please notify the customer(s) that their post must carry the SIU office in the address.</div>{% endif %}
+{% set held = b.letters|rejectattr("emailed_at")|selectattr("match_state","equalto","review")|list %}
+{% set ready = b.letters|rejectattr("emailed_at")|selectattr("rematched_at")|selectattr("match_state","equalto","verified")|list %}
+{% if held or ready %}<div class="flash" style="background:#fef3c7;border-color:#fbbf24">
+{% if held %}<b>{{held|length}} letter(s) are on hold / not verified.</b> If you have updated the client database since this batch was sorted (e.g. added the missing company), re-check them – nothing is emailed by this step:
+<form method="post" action="/batch/{{bid}}/rematch" style="display:inline"><button class="btn small">🔄 Re-check held letters against current client list</button></form>{% endif %}
+{% if ready %}<br><b>{{ready|length}} re-checked letter(s) are now verified and ready:</b>
+{% for L in ready %}{{L.letter_id}} → {{L.client.company_name}}{% if not loop.last %}, {% endif %}{% endfor %}.
+<form method="post" action="/batch/{{bid}}/send_held" style="display:inline" onsubmit="return confirm('Email {{ready|length}} re-checked letter(s) to their verified clients now?')"><button class="btn small">📧 Send {{ready|length}} re-checked letter(s)</button></form>{% endif %}
+</div>{% endif %}
 <p><a class="btn secondary small" href="/batch/{{bid}}/file/manifest.csv">Download manifest.csv</a>
 <a class="btn secondary small" href="/batch/{{bid}}/zip">Download all letters (zip)</a></p></div>
 
@@ -704,17 +728,30 @@ You will be warned before opening, downloading or sending these – please notif
 <button class="btn">Send all active &amp; unsent</button></form></p></div>
 
 <div class="card"><h2>Letters ({{b.letters|length}})</h2><p class="muted">Orange rows need a human check. Downloaded: {{b.letters|selectattr("downloaded_at")|list|length}} of {{b.letters|length}} · opened (viewed only): {{b.letters|rejectattr("downloaded_at")|selectattr("opened_at")|list|length}} · untouched: {{b.letters|rejectattr("downloaded_at")|rejectattr("opened_at")|list|length}}. Green rows are downloaded – e.g. for manual upload to the portal.</p>
-<table><tr><th>ID</th><th>Pages</th><th>Addressee (as printed)</th><th>Matched client</th><th>Reseller / Direct</th><th>KYC</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Address on letter</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Send</th><th>Downloaded</th><th>Review</th></tr>
-{% for L in b.letters %}<tr class="{{'review' if L.needs_review else ('sent' if L.downloaded_at else '')}}"{% if not L.siu_ok %} style="background:#fee2e2"{% endif %}><td>{{L.letter_id}}</td><td>{{L.pages|join('-')}}</td>
-<td>{{L.recipient_company}}</td><td>{% if L.client %}{{L.client.company_name}} <span class="muted">{{(L.match_score*100)|round|int}}%</span>{% else %}<b>— no match —</b>{% endif %}</td>
+<table><tr><th>ID</th><th>Length</th><th>Addressee (as printed)</th><th>Matched client</th><th>Reseller / Direct</th><th>KYC</th><th>Sender</th><th>Type</th><th>Urgency</th><th>Address on letter (AI read)</th><th>Address on file (CSV)</th><th>Summary</th><th>SIU</th><th>PDF</th><th>Send</th><th>Downloaded</th><th>Review</th></tr>
+{% for L in b.letters %}<tr class="{{'review' if L.needs_review else ('sent' if L.downloaded_at else '')}}"{% if not L.siu_ok %} style="background:#fee2e2"{% endif %}><td>{{L.letter_id}}</td><td>{{L.pages|length}} page{{'s' if L.pages|length != 1 else ''}}<br><span class="muted" style="font-size:11px">scan p.{{L.pages|join("-")}}</span></td>
+<td>{{L.recipient_company}}</td><td>{% if L.client %}{{L.client.company_name}}
+<span class="muted">{% if L.matched_by == "unit" %}unit ✓{% elif L.matched_by == "ai-verified" %}AI ✓{% elif L.matched_by == "staff" %}staff ✓{% else %}{{(L.match_score*100)|round|int}}%{% endif %}</span>
+{% if L.client.siu %}<br><span class="muted" style="font-size:11px">client unit {{L.client.siu}}</span>{% endif %}
+{% if L.unit_mismatch %}<br><span class="pill high">⚠ UNIT MISMATCH – letter is unit {{L.unit}}</span>{% endif %}
+{% else %}<b>— no match —</b>{% if L.unit %}<br><span class="muted" style="font-size:11px">letter unit {{L.unit}}</span>{% endif %}{% endif %}
+{% if L.match_state == "review" or not L.client %}<div style="background:#fef9c3;border:1px solid #fde047;border-radius:8px;padding:6px;margin-top:6px">
+<span class="pill high">NEEDS VERIFICATION</span>{% if L.match_note %}<br><span class="muted" style="font-size:11px">{{L.match_note}}</span>{% endif %}
+{% if L.suggested_client %}<br><span class="muted" style="font-size:11px">AI suggests: {{L.suggested_client}}</span>{% endif %}
+<form method="post" action="/batch/{{bid}}/assign/{{L.letter_id}}" style="margin-top:4px" onsubmit="return confirm('Confirm this letter belongs to the selected client? It will then be sendable.')">
+<select name="company" style="max-width:180px;font-size:12px;padding:4px;border:1px solid #cbd5e1;border-radius:6px">
+{% for name in all_clients %}<option value="{{name}}" {% if name == (L.suggested_client or (L.client.company_name if L.client else "")) %}selected{% endif %}>{{name}}</option>{% endfor %}
+<option value="__unmatch__">— not a client / do not send —</option></select>
+<button class="btn small">Confirm</button></form></div>{% endif %}</td>
 <td>{% if L.client %}{% if L.client.reseller %}<span class="pill" style="background:#e0e7ff;color:#3730a3">{{L.client.reseller}}</span>{% else %}<span class="pill">Direct</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
 <td>{% if L.client %}{% if L.client.kyc == "yes" %}<span class="pill active">✔</span>{% elif L.client.kyc == "no" %}<span class="pill high">pending</span>{% else %}<span class="muted">?</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
 <td>{{L.sender}}</td><td>{{L.letter_type}}{% if not L.in_package %}<br><span class="pill high">not in package</span>{% endif %}</td><td><span class="pill {{L.urgency}}">{{L.urgency}}</span></td>
-<td style="font-size:13px">{% if L.address %}{{L.address}}{% else %}<span class="muted">— (batch processed before this feature; re-upload the scan to capture addresses)</span>{% endif %}</td><td>{{L.summary}}</td>
+<td style="font-size:12px">{% if L.address %}{{L.address}}{% else %}<span class="muted">—</span>{% endif %}</td>
+<td style="font-size:12px">{% if L.client and L.client.address %}{{L.client.address}}{% elif L.client %}<span class="pill high" style="font-size:11px">no address in CSV</span>{% else %}<span class="muted">—</span>{% endif %}</td><td>{{L.summary}}</td>
 <td>{% if L.siu_ok %}<span class="pill active">✔</span>{% else %}<span class="pill high">MISSING</span>{% endif %}</td>
 <td>{% if L.siu_ok %}<a href="/batch/{{bid}}/file/{{L.file}}" target="_blank">open</a> · <a href="/batch/{{bid}}/download/{{L.file}}">download</a>{% else %}<a href="/batch/{{bid}}/file/{{L.file}}" target="_blank" onclick="return siuWarn('{{L.letter_id}}')">open</a> · <a href="/batch/{{bid}}/download/{{L.file}}" onclick="return siuWarn('{{L.letter_id}}')">download</a>{% endif %}</td>
-<td>{% if not loop.first %}<form method="post" action="/batch/{{bid}}/merge/{{L.letter_id}}" onsubmit="return confirm('Merge {{L.letter_id}} into the letter above? They will become ONE PDF. Use this when one document was wrongly split in two.')">
-<button class="btn small secondary" title="This letter is really a continuation of the one above">Merge ↑</button></form><br>{% endif %}{% if L.client and L.client.email %}<form method="post" action="/batch/{{bid}}/send_letter/{{L.letter_id}}" onsubmit="return {% if not L.siu_ok %}siuWarn('{{L.letter_id}}') && {% endif %}{% if not L.in_package %}confirm('NOTE: this letter is NOT covered by {{L.client.package or "the client"}}\'s package (non-government mail). Send it anyway?') && {% endif %}confirm('Email this letter to {{L.client.email}}?')">
+<td>{% if L.match_state == "review" %}<span class="muted" style="font-size:12px">verify match first</span><br>{% endif %}{% if not loop.first %}<form method="post" action="/batch/{{bid}}/merge/{{L.letter_id}}" onsubmit="return confirm('Merge {{L.letter_id}} into the letter above? They will become ONE PDF. Use this when one document was wrongly split in two.')">
+<button class="btn small secondary" title="This letter is really a continuation of the one above">Merge ↑</button></form><br>{% endif %}{% if L.client and L.client.email %}<form method="post" action="/batch/{{bid}}/send_letter/{{L.letter_id}}" onsubmit="return {% if L.unit_mismatch %}confirm('DANGER: this letter shows unit {{L.unit}} but is matched to {{L.client.company_name}} (unit {{L.client.siu or "?"}}). Sending to the wrong client exposes confidential post. Are you CERTAIN this is the right client?') && {% endif %}{% if not L.siu_ok %}siuWarn('{{L.letter_id}}') && {% endif %}{% if not L.in_package %}confirm('NOTE: this letter is NOT covered by {{L.client.package or "the client"}}\'s package (non-government mail). Send it anyway?') && {% endif %}confirm('Email this letter to {{L.client.email}}?')">
 <button class="btn small">{{'Re-send' if L.emailed_at else 'Send'}}</button></form>{% if L.emailed_at %}<span class="muted" style="font-size:11px">✉ {{L.emailed_at|replace("T"," ")}}</span>{% endif %}{% else %}<span class="muted">no client</span>{% endif %}</td>
 <td>{% if L.downloaded_at %}<span class="pill active">✔ downloaded {{L.downloaded_at|replace("T"," ")}}</span>
 {% elif L.opened_at %}<span class="pill">👁 opened ×{{L.opens or 1}} · {{L.opened_at|replace("T"," ")}}</span>
@@ -761,7 +798,11 @@ CLIENTS = """{% extends "base" %}{% block body %}
 (package = Basic / Standard / Premium; start_date = when the client's service year began, e.g. 2026-03-01 or 01/03/2026.
 An <b>active</b> client is automatically shown and treated as <b>overdue</b> once a year has passed since their start date –
 update the start date when they renew. reseller = the reseller/partner this address is assigned through; leave blank for a direct client.
-kyc = yes/no (aliases: done/pending) – whether identity checks are complete for this client.)
+kyc = yes/no (aliases: done/pending) – whether identity checks are complete for this client.
+siu = the client's unique unit/SIU number, e.g. A80 – STRONGLY recommended: letters are matched by this number first,
+and a letter whose unit number conflicts with the matched client is held instead of sent.
+address = the client's full registered address as it should appear on their post – used by the AI to verify matches.
+Letters whose address does not reliably match any client are HELD as unmatched, never sent on a guess.)
 (status = active / overdue / suspended / cancelled). Only <b>active</b> clients are emailed automatically.</p>
 <form method="post" action="/clients/upload" enctype="multipart/form-data"><input type="file" name="csv" accept=".csv,text/csv" required>
 <button class="btn">Upload / update database</button> <a class="btn secondary" href="/clients/sample">Download sample CSV</a>
@@ -770,7 +811,7 @@ kyc = yes/no (aliases: done/pending) – whether identity checks are complete fo
 {% set bad = clients|selectattr("start_date")|rejectattr("_expiry")|list %}{% if bad %}
 <div class="flash" style="background:#fee2e2;border-color:#fca5a5"><b>{{bad|length}} client(s) have a start date the system cannot read</b> (marked ⚠ below) – their renewal due date and automatic overdue cannot be calculated. Please use dates like 2026-03-01 or 01/03/2026 and re-upload.</div>{% endif %}</div>
 <div class="card"><h2>Add or edit one client</h2>
-<form method="post" action="/clients/save"><div style="display:grid;grid-template-columns:repeat(9,1fr);gap:10px">
+<form method="post" action="/clients/save"><div style="display:grid;grid-template-columns:repeat(11,1fr);gap:10px">
 <div><label>Client ID</label><input type="text" name="client_id"></div><div><label>Company name *</label><input type="text" name="company_name" required></div>
 <div><label>Contact</label><input type="text" name="contact_name"></div><div><label>Email</label><input type="text" name="email"></div>
 <div><label>Status</label><input type="text" name="status" value="active"></div>
@@ -778,6 +819,8 @@ kyc = yes/no (aliases: done/pending) – whether identity checks are complete fo
 <option value="">—</option><option>Basic</option><option>Standard</option><option>Premium</option></select></div>
 <div><label>Service start</label><input type="date" name="start_date"></div>
 <div><label>Reseller (blank = direct)</label><input type="text" name="reseller"></div>
+<div><label>Unit / SIU no.</label><input type="text" name="siu" placeholder="A80"></div>
+<div><label>Registered address</label><input type="text" name="address" placeholder="SIU A80, 71-75 ..."></div>
 <div><label>KYC done</label><select name="kyc" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px">
 <option value="">—</option><option value="yes">Yes</option><option value="no">No</option></select></div></div>
 <p><button class="btn">Save</button> <span class="muted">Matching company name (case-insensitive) is updated; otherwise added.</span></p></form></div>
@@ -789,14 +832,46 @@ kyc = yes/no (aliases: done/pending) – whether identity checks are complete fo
 <td>{{c.company_name}}</td><td>{{c._expiry}}</td><td>{% if c._days_left < 0 %}<span class="pill high">overdue</span>{% else %}{{c._days_left}}{% endif %}</td>
 <td>{% if c._reminded %}<span class="pill active">✔ {{c._reminded}}</span>{% else %}<span class="muted">not yet</span>{% endif %}</td>
 <td><form method="post" action="/clients/remind/{{c.reseller}}" onsubmit="return confirm('Email {{c.reseller}} about all their clients due within 30 days?')"><button class="btn small">Send now</button></form></td></tr>{% endfor %}</table></div>{% endif %}
-<div class="card"><h2>Clients</h2><table><tr><th>ID</th><th>Company</th><th>Contact</th><th>Email</th><th>Status</th><th>Package</th><th>Reseller / Direct</th><th>KYC</th><th>Service start</th><th>Renewal due</th></tr>
-{% for c in clients %}<tr><td>{{c.client_id}}</td><td>{{c.company_name}}</td><td>{{c.contact_name}}</td><td>{{c.email}}</td>
+<div class="card"><h2>Clients</h2><table><tr><th>ID</th><th>Company</th><th>Unit</th><th>Address</th><th>Contact</th><th>Email</th><th>Status</th><th>Package</th><th>Reseller / Direct</th><th>KYC</th><th>Service start</th><th>Renewal due</th></tr>
+{% for c in clients %}<tr><td>{{c.client_id}}</td><td>{{c.company_name}}</td><td>{% if c.siu %}<span class="pill">{{c.siu}}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+<td style="font-size:12px;max-width:180px">{{c.address or "—"}}</td><td>{{c.contact_name}}</td><td>{{c.email}}</td>
 <td><span class="pill {{'active' if c.status=='active' else 'hold'}}">{{c.status}}</span>{% if c._auto_overdue %}<br><span class="muted" style="font-size:11px">auto – year ended</span>{% endif %}</td>
 <td>{% if c.package %}<span class="pill">{{c.package}}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
 <td>{% if c.reseller %}<span class="pill" style="background:#e0e7ff;color:#3730a3">{{c.reseller}}</span>{% else %}<span class="pill">Direct</span>{% endif %}</td>
 <td>{% if c.kyc == "yes" %}<span class="pill active">✔ done</span>{% elif c.kyc == "no" %}<span class="pill high">pending</span>{% else %}<span class="muted">—</span>{% endif %}</td>
 <td>{% if c.start_date and not c._expiry %}<span class="pill high" title="This date could not be understood – use YYYY-MM-DD or DD/MM/YYYY">⚠ {{c.start_date}}</span>{% else %}{{c.start_date or "—"}}{% endif %}</td>
 <td>{% if c._expiry %}{{c._expiry}}{% if c._auto_overdue %} <span class="pill high">passed</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% endfor %}</table></div>{% endblock %}"""
+
+AUDIT = """{% extends "base" %}{% block body %}<div class="card"><h1>System audit</h1>
+<p class="muted">Automatic safety and data-quality checks across the client database and every processed batch.
+Run this after uploading a new client list and after any incident. Red items need action.</p>
+{% if a.critical %}{% for c in a.critical %}<div class="flash" style="background:#fee2e2;border-color:#dc2626"><b>⚠ {{c}}</b></div>{% endfor %}
+{% else %}<div class="flash" style="background:#e8f7ee;border-color:#86efac"><b>No critical problems found.</b></div>{% endif %}
+
+<h2>Client database ({{a.n_clients}} clients)</h2>
+<table>
+<tr><td>Missing <b>unit/SIU number</b> (weakens match safety)</td><td>{{a.missing_siu|length}}</td><td style="font-size:12px">{{a.missing_siu[:12]|join(", ")}}{% if a.missing_siu|length > 12 %} …{% endif %}</td></tr>
+<tr><td>Missing <b>registered address</b> (weakens AI verification)</td><td>{{a.missing_address|length}}</td><td style="font-size:12px">{{a.missing_address[:12]|join(", ")}}{% if a.missing_address|length > 12 %} …{% endif %}</td></tr>
+<tr><td>Missing email</td><td>{{a.missing_email|length}}</td><td style="font-size:12px">{{a.missing_email[:12]|join(", ")}}</td></tr>
+<tr><td>Missing start date</td><td>{{a.missing_start|length}}</td><td></td></tr>
+</table>
+{% if a.similar_names %}<h2>Dangerously similar client names</h2>
+<p class="muted">These pairs can be confused by senders and matching – make sure BOTH have unit numbers and addresses.</p>
+<ul style="font-size:14px">{% for s in a.similar_names %}<li>{{s}}</li>{% endfor %}</ul>{% endif %}
+
+<h2>Matching method across all letters</h2>
+<table><tr><th>Method</th><th>Letters</th></tr>
+{% for m, n in a.match_dist.items() %}<tr><td>{{ {"unit":"Unit number (safest)","ai-verified":"AI-verified","name":"Name match","staff":"Staff-confirmed","unmatched":"Unmatched / held"}.get(m, m) }}</td><td>{{n}}</td></tr>{% endfor %}</table>
+
+{% if a.risky_sent %}<h2 style="color:#b91c1c">Letters emailed while flagged (historical)</h2>
+<ul style="font-size:13px">{% for r in a.risky_sent %}<li>{{r}}</li>{% endfor %}</ul>{% endif %}
+
+<h2>Batches</h2>
+<table><tr><th>Batch</th><th>Letters</th><th>No address read</th><th>No unit found</th><th>Currently held</th><th>Mode</th></tr>
+{% for s in a.batch_stats|reverse %}<tr {% if s.heuristic %}style="background:#fee2e2"{% endif %}>
+<td>{{s.id}}</td><td>{{s.n}}</td><td>{{s.no_addr}}</td><td>{{s.no_unit}}</td><td>{{s.held}}</td><td>{{"NO AI!" if s.heuristic else "AI"}}</td></tr>{% endfor %}</table>
+{% if a.dup_scans %}<h2>Possible duplicate uploads</h2><ul>{% for d in a.dup_scans %}<li>{{d}}</li>{% endfor %}</ul>{% endif %}
+</div>{% endblock %}"""
 
 TEMPLATES_PAGE = """{% extends "base" %}{% block body %}<div class="card"><h1>Email templates</h1>
 <p class="muted">Every email the system sends, editable in one place. Words in curly brackets like <code>{company}</code>
@@ -834,18 +909,26 @@ HISTORY = """{% extends "base" %}{% block body %}
 <span class="muted">{% if q %}{{found|length}} letter(s) match "{{q}}" · {% endif %}{{downloaded|length}} letter(s) downloaded · {{sent|length}} email(s) sent · {{batches|length}} batches in total</span></form>
 {% if q %}<h2>Letters matching "{{q}}"</h2>
 {% if not found %}<p class="muted">No letters match. The search looks at client name, addressee, address on the letter, sender and summary, across every batch. (Addresses exist only on batches processed after the address feature was added.)</p>{% else %}
-<table><tr><th>Received</th><th>Batch</th><th>Client / addressee</th><th>Address on letter</th><th>Sender</th><th>Summary</th><th>SIU</th><th>PDF</th></tr>
+<table><tr><th>Received</th><th>Batch</th><th>Client / addressee</th><th>Address on letter (AI read)</th><th>Address on file (CSV)</th><th>Sender</th><th>Summary</th><th>Length</th><th>SIU</th><th>PDF</th></tr>
 {% for L in found %}<tr{% if not L.siu_ok %} style="background:#fee2e2"{% endif %}>
 <td>{{L.created|replace("T"," ")}}</td><td><a href="/batch/{{L.batch}}">{{L.batch}}</a></td>
 <td>{{L.client.company_name if L.client else L.recipient_company or "—"}}{% if L.client and L.client.reseller %}<br><span class="pill" style="background:#e0e7ff;color:#3730a3;font-size:11px">{{L.client.reseller}}</span>{% endif %}</td>
-<td style="font-size:13px">{{L.address or "—"}}</td><td>{{L.sender}}</td><td style="font-size:13px">{{L.summary}}</td>
+<td style="font-size:12px">{{L.address or "—"}}</td>
+<td style="font-size:12px">{% if L.client and L.client.address %}{{L.client.address}}{% elif L.client %}<span class="pill high" style="font-size:11px">no address in CSV</span>{% else %}—{% endif %}</td>
+<td>{{L.sender}}</td><td style="font-size:13px">{{L.summary}}</td>
+<td>{{L.pages|length}} pg<br><span class="muted" style="font-size:11px">p.{{L.pages|join("-")}}</span></td>
 <td>{% if L.siu_ok %}<span class="pill active">✔</span>{% else %}<span class="pill high">MISSING</span>{% endif %}</td>
 <td><a href="/batch/{{L.batch}}/file/{{L.file}}" target="_blank"{% if not L.siu_ok %} onclick="return siuWarn('{{L.letter_id}}')"{% endif %}>open</a> · <a href="/batch/{{L.batch}}/download/{{L.file}}"{% if not L.siu_ok %} onclick="return siuWarn('{{L.letter_id}}')"{% endif %}>download</a></td></tr>{% endfor %}</table>{% endif %}{% endif %}
 <h2>Letters downloaded</h2>
 {% if not downloaded %}<p class="muted">No letters downloaded yet.</p>{% else %}
-<table><tr><th>Downloaded</th><th>Client</th><th>Letter</th><th>Sender</th><th>Pages</th><th>Batch</th><th></th></tr>
-{% for d in downloaded %}<tr><td>{{d.downloaded_at|replace("T"," ")}}</td><td>{{d.client.company_name if d.client else "— unmatched —"}}</td>
-<td>{{d.letter_id}} · {{d.summary}}</td><td>{{d.sender}}</td><td>{{d.pages|join("-")}}</td><td>{{d.batch}}</td>
+<table><tr><th>Downloaded</th><th>Client</th><th>Letter</th><th>Address on letter (AI read)</th><th>Address on file (CSV)</th><th>Sender</th><th>Length</th><th>Batch</th><th></th></tr>
+{% for d in downloaded %}<tr><td>{{d.downloaded_at|replace("T"," ")}}</td>
+<td>{% if d.client %}{{d.client.company_name}}{% elif d.recipient_company %}{{d.recipient_company}}<br><span class="pill high" style="font-size:11px">not in client database</span>{% else %}<span class="muted">unknown addressee</span>{% endif %}</td>
+<td>{{d.letter_id}} · {{d.summary}}</td>
+<td style="font-size:12px">{{d.address or "—"}}</td>
+<td style="font-size:12px">{% if d.client and d.client.address %}{{d.client.address}}{% elif d.client %}<span class="pill high" style="font-size:11px">no address in CSV</span>{% else %}—{% endif %}</td>
+<td>{{d.sender}}</td>
+<td>{{d.pages|length}} page{{'s' if d.pages|length != 1 else ''}}<br><span class="muted" style="font-size:11px">scan p.{{d.pages|join("-")}}</span></td><td>{{d.batch}}</td>
 <td><a class="btn small secondary" href="/batch/{{d.batch}}/download/{{d.file}}">Download again</a></td></tr>{% endfor %}</table>{% endif %}
 <h2 style="margin-top:24px">Emails sent</h2>
 {% if not sent %}<p class="muted">No emails sent yet.</p>{% else %}
@@ -859,7 +942,8 @@ HISTORY = """{% extends "base" %}{% block body %}
 
 app.jinja_loader = type("L", (), {"get_source": lambda self, env, name: (
     {"base": BASE, "home": HOME, "batch": BATCH, "email": EMAIL, "clients": CLIENTS, "settings": SETTINGS,
-     "history": HISTORY, "issues": ISSUES, "compliance": COMPLIANCE, "templates": TEMPLATES_PAGE}[name], name, lambda: True)})()
+     "history": HISTORY, "issues": ISSUES, "compliance": COMPLIANCE, "templates": TEMPLATES_PAGE,
+     "audit": AUDIT}[name], name, lambda: True)})()
 
 
 # ----------------------------------------------------------------------------- routes
@@ -972,11 +1056,12 @@ def api_job(bid):
 @app.get("/batch/<bid>")
 def batch(bid):
     b = load_batch(bid)
+    all_clients = sorted(c["company_name"] for c in read_clients())
     if b:
         for e in b["emails"]:
             e["n_issues"] = len(client_issues(b, e))
     job = JOBS.get(bid, {"msg": "Not found (was the app restarted mid-run?)", "frac": 0, "error": None})
-    return render_template_string(BATCH, bid=bid, b=b, job=job)
+    return render_template_string(BATCH, bid=bid, b=b, job=job, all_clients=all_clients)
 
 
 @app.get("/batch/<bid>/file/<path:rel>")
@@ -1055,10 +1140,19 @@ def email_preview(bid, i):
 
 def _send_one(bid: str, b: dict, i: int, cfg: dict):
     e = b["emails"][i]
+    # SAFETY GATE: confidential post must never go out on an unverified or conflicting match.
+    bad = [L["letter_id"] for L in b["letters"]
+           if L.get("client") and L["client"]["company_name"] == e["company"]
+           and (L.get("unit_mismatch") or L.get("match_state") == "review")]
+    if bad:
+        raise RuntimeError(f"BLOCKED – letter(s) {', '.join(bad)} are not verified to belong to "
+                           f"{e['company']}. Confirm each match on the letter row first.")
     bdir = batch_dir(bid)
     subject, body = draft_parts(bdir, e)
     atts = [bdir / L["file"] for L in b["letters"]
-            if L["client"] and L["client"]["company_name"] == e["company"] and L.get("in_package", True)] \
+            if L["client"] and L["client"]["company_name"] == e["company"] and L.get("in_package", True)
+            and not L.get("unit_mismatch") and L.get("match_state") != "review"
+            and not L.get("emailed_at")] \
         if cfg.get("attach_pdfs") else []
     send_email(cfg, e["email"], subject, body, atts)
     e["sent_at"] = dt.datetime.now().isoformat(timespec="seconds"); e["sent_to"] = e["email"]
@@ -1145,6 +1239,9 @@ def merge_letter(bid, lid):
     prev["pages"] = pages
     prev["summary"] = (prev.get("summary") or "")
     prev["siu_ok"] = prev.get("siu_ok", True) or cur.get("siu_ok", False)
+    if cur.get("match_state") == "review" or cur.get("unit_mismatch"):
+        prev["match_state"] = "review"
+        prev["match_note"] = "merged with an unverified letter – re-confirm the client"
     b["letters"].pop(idx)
     # refresh the per-client email letter counts
     for e in b["emails"]:
@@ -1155,15 +1252,65 @@ def merge_letter(bid, lid):
     return redirect(f"/batch/{bid}")
 
 
-@app.post("/batch/<bid>/send_letter/<lid>")
-def send_letter(bid, lid):
+def _base_action(e: dict) -> str:
+    status = (e.get("status") or "").lower()
+    return "SEND" if status in ("active",) else f"HOLD – account status is '{status or 'unknown'}'"
+
+
+def recompute_email_flags(b: dict):
+    for e in b["emails"]:
+        ls = [L for L in b["letters"] if L.get("client") and L["client"]["company_name"] == e["company"]]
+        e["letters"] = len(ls)
+        mismatches = [L["letter_id"] for L in ls if L.get("unit_mismatch")]
+        unverified = [L["letter_id"] for L in ls if L.get("match_state") == "review"]
+        e["unit_mismatch_ids"] = mismatches
+        if ls and all(L.get("emailed_at") for L in ls) and not e["sent_at"] and not e.get("manual_sent_at"):
+            e["action"] = "DONE – every letter already emailed individually"
+            continue
+        if mismatches:
+            e["action"] = f"HOLD – UNIT MISMATCH on {', '.join(mismatches)} (check before sending!)"
+        elif unverified:
+            e["action"] = f"HOLD – match not verified on {', '.join(unverified)} (confirm the client first)"
+        elif e["action"].startswith("HOLD – UNIT MISMATCH") or e["action"].startswith("HOLD – match not verified"):
+            e["action"] = _base_action(e)
+
+
+@app.post("/batch/<bid>/assign/<lid>")
+def assign_letter(bid, lid):
     b = load_batch(bid) or abort(404)
     L = next((x for x in b["letters"] if x["letter_id"] == lid), None) or abort(404)
+    company = (request.form.get("company") or "").strip()
+    if company == "__unmatch__":
+        L["client"] = None
+        L["match_state"] = "review"
+        L["match_score"] = 0.0
+        flash(f"{lid} set to unmatched.")
+    else:
+        c = next((x for x in read_clients() if x["company_name"] == company), None)
+        if not c:
+            flash("Client not found in the database.")
+            return redirect(f"/batch/{bid}")
+        L["client"] = {k: c.get(k, "") for k in REQUIRED_COLS}
+        L["match_state"] = "verified"
+        L["match_note"] = "confirmed by staff"
+        L["matched_by"] = "staff"
+        L["match_score"] = 1.0
+        L["unit_mismatch"] = False
+        L["needs_review"] = "; ".join(x for x in (L.get("needs_review") or "").split("; ")
+                                      if x and "MATCH NOT VERIFIED" not in x and "UNIT MISMATCH" not in x and "no client match" not in x and "fuzzy match" not in x)
+        flash(f"{lid} confirmed as {company}.")
+    recompute_email_flags(b)
+    save_batch(bid, b)
+    return redirect(f"/batch/{bid}")
+
+
+def _send_letter_email(bid: str, L: dict, cfg: dict):
+    """Email ONE letter to its verified client. Raises on failure. SAFETY: refuses unverified matches."""
     c = L.get("client")
     if not c or not c.get("email"):
-        flash("This letter has no matched client email – add the client first.")
-        return redirect(f"/batch/{bid}")
-    cfg = load_config()
+        raise RuntimeError("no matched client email")
+    if L.get("match_state") == "review" or L.get("unit_mismatch"):
+        raise RuntimeError("match not verified")
     today = dt.date.today().strftime("%d/%m/%Y")
     fields = dict(company=c["company_name"], contact=c.get("contact_name") or "Client", date=today,
                   sender=L.get("sender") or "unknown sender", summary=L.get("summary", ""),
@@ -1173,14 +1320,98 @@ def send_letter(bid, lid):
     subject = render(get_t("letter_subject"), **fields)
     body = render(get_t("letter_body"), **fields)
     atts = [batch_dir(bid) / L["file"]] if cfg.get("attach_pdfs") else []
+    send_email(cfg, c["email"], subject, body, atts)
+    L["emailed_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    L["emailed_to"] = c["email"]
+
+
+@app.post("/batch/<bid>/send_letter/<lid>")
+def send_letter(bid, lid):
+    b = load_batch(bid) or abort(404)
+    L = next((x for x in b["letters"] if x["letter_id"] == lid), None) or abort(404)
+    c = L.get("client")
+    if not c or not c.get("email"):
+        flash("This letter has no matched client email – add the client first.")
+        return redirect(f"/batch/{bid}")
+    if L.get("match_state") == "review" or L.get("unit_mismatch"):
+        flash(f"{lid} cannot be sent – its client match is not verified. Confirm the correct client on the letter row first.")
+        return redirect(f"/batch/{bid}")
     try:
-        send_email(cfg, c["email"], subject, body, atts)
-        L["emailed_at"] = dt.datetime.now().isoformat(timespec="seconds")
-        L["emailed_to"] = c["email"]
+        _send_letter_email(bid, L, load_config())
         save_batch(bid, b)
         flash(f"Letter {lid} sent to {c['email']}.")
     except Exception as ex:
         flash(f"Could not send {lid}: {ex}")
+    return redirect(f"/batch/{bid}")
+
+
+@app.post("/batch/<bid>/rematch")
+def rematch_batch(bid):
+    """Re-check every held / unverified letter against the CURRENT client database.
+    Use after updating the CSV: letters held because their company was missing can now match."""
+    b = load_batch(bid) or abort(404)
+    clients = ms.load_clients(CLIENTS_CSV)
+    if not clients:
+        flash("The client database is empty – upload your CSV first.")
+        return redirect(f"/batch/{bid}")
+    held = [L for L in b["letters"]
+            if not L.get("emailed_at")
+            and L.get("matched_by") != "staff"
+            and (not L.get("client") or L.get("match_state") == "review")]
+    if not held:
+        flash("No held or unverified letters to re-check in this batch.")
+        return redirect(f"/batch/{bid}")
+    cfg = load_config()
+    ms.match_letters(held, clients, use_ai=bool(cfg.get("anthropic_api_key")),
+                     api_key=cfg.get("anthropic_api_key") or None, model=cfg.get("model") or None)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    verified, suggested, still_held = 0, 0, 0
+    for L in held:
+        if L.get("client"):
+            L["client"] = {k: L["client"].get(k, "") for k in REQUIRED_COLS}
+        if L.get("match_state") == "verified" and L.get("client"):
+            L["rematched_at"] = now
+            verified += 1
+        elif L.get("client") or L.get("suggested_client"):
+            suggested += 1
+        else:
+            still_held += 1
+    recompute_email_flags(b)
+    save_batch(bid, b)
+    flash(f"Re-checked {len(held)} held letter(s) against the current client list: "
+          f"{verified} now verified (ready to send), {suggested} have a possible match for staff to confirm, "
+          f"{still_held} still have no match. Nothing has been emailed yet.")
+    return redirect(f"/batch/{bid}")
+
+
+@app.post("/batch/<bid>/send_held")
+def send_held(bid):
+    """Send every re-checked letter that is now VERIFIED (after a CSV update + re-check).
+    Unverified, out-of-package, non-active or already-sent letters are never touched."""
+    b = load_batch(bid) or abort(404)
+    cfg = load_config()
+    ok, skipped, failed = 0, [], []
+    for L in b["letters"]:
+        if not L.get("rematched_at") or L.get("emailed_at"):
+            continue
+        c = L.get("client")
+        if not c or L.get("match_state") != "verified" or L.get("unit_mismatch"):
+            continue
+        if not c.get("email"):
+            skipped.append(f"{L['letter_id']} (no email on file)"); continue
+        if (c.get("status") or "").lower() not in ms.STATUS_OK:
+            skipped.append(f"{L['letter_id']} (status {c.get('status')})"); continue
+        if not L.get("in_package", True):
+            skipped.append(f"{L['letter_id']} (not in {c.get('package') or 'their'} package)"); continue
+        try:
+            _send_letter_email(bid, L, cfg); ok += 1
+        except Exception as ex:
+            failed.append(f"{L['letter_id']}: {ex}")
+    save_batch(bid, b)
+    msg = f"Sent {ok} re-checked letter(s)."
+    if skipped: msg += " Skipped: " + "; ".join(skipped) + "."
+    if failed: msg += " Failed: " + "; ".join(failed) + "."
+    flash(msg)
     return redirect(f"/batch/{bid}")
 
 
@@ -1235,7 +1466,18 @@ def clients_upload():
     try:
         rows = parse_client_upload(f.read())
         write_clients(rows)
-        flash(f"Client database updated – {len(rows)} clients.")
+        msg = f"Client database updated – {len(rows)} clients."
+        no_siu = sum(1 for r in rows if not (r.get("siu") or "").strip())
+        no_addr = sum(1 for r in rows if not (r.get("address") or "").strip())
+        if no_siu or no_addr:
+            parts = []
+            if no_siu: parts.append(f"{no_siu} of {len(rows)} clients have NO siu (unit/office number)")
+            if no_addr: parts.append(f"{no_addr} have NO address")
+            msg += (" ⚠ IMPORTANT: " + " and ".join(parts) + ". The unit number and registered address are "
+                    "MailSort's strongest proof of who a letter belongs to – without them, matching falls back "
+                    "on company names alone and far more letters will be HELD for manual review. Please add "
+                    "'siu' and 'address' columns to your CSV.")
+        flash(msg)
     except Exception as ex:
         flash(f"Could not read the file: {ex}")
     return redirect("/clients")
@@ -1285,6 +1527,7 @@ def clients_save():
     new["start_date"] = d.isoformat() if d else ""
     if new.get("kyc") not in ("yes", "no"):
         new["kyc"] = ""
+    new["siu"] = (new.get("siu") or "").strip().upper()
     key = ms.normalise_name(new["company_name"])
     for r in rows:
         if ms.normalise_name(r["company_name"]) == key:
@@ -1295,12 +1538,12 @@ def clients_save():
     return redirect("/clients")
 
 
-SAMPLE_CSV = """client_id,company_name,contact_name,email,status,package,start_date,reseller,reseller_email,kyc
-C001,Bluebird Consulting Ltd,Sarah Khan,sarah@bluebirdconsulting.co.uk,active,Premium,2026-03-01,,,yes
-C002,Northgate Logistics Limited,Tom Reid,tom@northgatelogistics.com,active,Standard,2026-01-15,FormationsHub Ltd,accounts@formationshub.com,yes
-C003,Pixel & Pine Studio Ltd,Amira Osei,hello@pixelandpine.co.uk,active,Basic,2025-06-10,FormationsHub Ltd,accounts@formationshub.com,no
-C004,Harrow Property Ventures LLP,James Whitfield,james@harrowpv.com,cancelled,Standard,2024-11-20,,,yes
-C005,Greenleaf Nutrition Ltd,Priya Nair,priya@greenleafnutrition.com,active,Premium,2026-05-05,BizStart Agency,hello@bizstart.agency,no
+SAMPLE_CSV = """client_id,company_name,contact_name,email,status,package,start_date,reseller,reseller_email,kyc,siu,address
+C001,Bluebird Consulting Ltd,Sarah Khan,sarah@bluebirdconsulting.co.uk,active,Premium,2026-03-01,,,yes,A80,"SIU A80, 71-75 Shelton Street, Covent Garden, London WC2H 9JQ"
+C002,Northgate Logistics Limited,Tom Reid,tom@northgatelogistics.com,active,Standard,2026-01-15,FormationsHub Ltd,accounts@formationshub.com,yes,A81,"SIU A81, 71-75 Shelton Street, Covent Garden, London WC2H 9JQ"
+C003,Pixel & Pine Studio Ltd,Amira Osei,hello@pixelandpine.co.uk,active,Basic,2025-06-10,FormationsHub Ltd,accounts@formationshub.com,no,A82,"SIU A82, 71-75 Shelton Street, Covent Garden, London WC2H 9JQ"
+C004,Harrow Property Ventures LLP,James Whitfield,james@harrowpv.com,cancelled,Standard,2024-11-20,,,yes,A83,"SIU A83, 71-75 Shelton Street, Covent Garden, London WC2H 9JQ"
+C005,Greenleaf Nutrition Ltd,Priya Nair,priya@greenleafnutrition.com,active,Premium,2026-05-05,BizStart Agency,hello@bizstart.agency,no,A84,"SIU A84, 71-75 Shelton Street, Covent Garden, London WC2H 9JQ"
 """
 
 
@@ -1313,6 +1556,76 @@ def clients_sample():
 @app.get("/clients/download")
 def clients_download():
     return send_from_directory(DATA, "clients.csv", as_attachment=True)
+
+
+def run_audit() -> dict:
+    """Data-quality and safety audit across the client database and every batch."""
+    import collections
+    a: dict = {"client_issues": [], "critical": [], "batch_stats": [], "risky_sent": [],
+               "match_dist": collections.Counter(), "dup_scans": []}
+    clients = read_clients()
+    a["n_clients"] = len(clients)
+    a["missing_email"] = [c["company_name"] for c in clients if not c.get("email")]
+    a["missing_siu"] = [c["company_name"] for c in clients if not c.get("siu")]
+    a["missing_address"] = [c["company_name"] for c in clients if not c.get("address")]
+    a["missing_start"] = [c["company_name"] for c in clients if not c.get("start_date")]
+    units = collections.Counter(c.get("siu") for c in clients if c.get("siu"))
+    a["dup_units"] = {u: [c["company_name"] for c in clients if c.get("siu") == u]
+                      for u, n in units.items() if n > 1}
+    if a["dup_units"]:
+        a["critical"].append(f"Duplicate unit numbers in client database: "
+                             + "; ".join(f"{u} → {', '.join(v)}" for u, v in a["dup_units"].items())
+                             + ". Unit-based matching is DISABLED for these units until fixed.")
+    # near-duplicate company names (ambiguity risk)
+    norms = [(ms.normalise_name(c["company_name"]), c["company_name"]) for c in clients]
+    import difflib as dl
+    seen = set()
+    a["similar_names"] = []
+    for i in range(len(norms)):
+        for j in range(i + 1, len(norms)):
+            if norms[i][0] and dl.SequenceMatcher(None, norms[i][0], norms[j][0]).ratio() >= 0.78:
+                key = tuple(sorted((norms[i][1], norms[j][1])))
+                if key not in seen:
+                    seen.add(key)
+                    a["similar_names"].append(f"{key[0]}  ↔  {key[1]}")
+    # batches
+    scan_names = collections.Counter()
+    if BATCHES.exists():
+        for d in sorted(BATCHES.iterdir()):
+            b = load_batch(d.name) if d.is_dir() else None
+            if not b:
+                continue
+            ls = b.get("letters", [])
+            n = len(ls)
+            no_addr = sum(1 for L in ls if not L.get("address"))
+            no_unit = sum(1 for L in ls if not L.get("unit"))
+            held = sum(1 for L in ls if L.get("match_state") == "review" or L.get("unit_mismatch"))
+            for L in ls:
+                a["match_dist"][L.get("matched_by") or ("unmatched" if not L.get("client") else "?")] += 1
+            scan_names[b.get("pdf", "")] += 1
+            heur = b.get("mode") not in ("ai", "file")
+            a["batch_stats"].append({"id": b["id"], "n": n, "no_addr": no_addr, "no_unit": no_unit,
+                                     "held": held, "heuristic": heur})
+            if heur and n:
+                a["critical"].append(f"Batch {b['id']} was processed WITHOUT AI (heuristic mode) – its matching is unreliable; check the API key and re-upload that scan.")
+            # historical risk: anything actually EMAILED while flagged (pre-lock era)
+            sent_companies = {e["company"] for e in b.get("emails", []) if e.get("sent_at")}
+            for L in ls:
+                flagged = L.get("unit_mismatch") or L.get("match_state") == "review"
+                emailed = bool(L.get("emailed_at")) or (L.get("client") and L["client"]["company_name"] in sent_companies)
+                if flagged and emailed:
+                    a["risky_sent"].append(f"{b['id']} / {L['letter_id']} – sent to "
+                                           f"{(L.get('client') or {}).get('company_name', '?')} while flagged "
+                                           f"({'unit mismatch' if L.get('unit_mismatch') else 'match not verified'}) – REVIEW MANUALLY")
+    a["dup_scans"] = [f"{name} uploaded {n}×" for name, n in scan_names.items() if name and n > 1]
+    if a["risky_sent"]:
+        a["critical"].append(f"{len(a['risky_sent'])} letter(s) were EMAILED while their match was flagged (before the sending locks) – listed below; verify each went to the right client.")
+    return a
+
+
+@app.get("/audit")
+def audit_page():
+    return render_template_string(AUDIT, a=run_audit())
 
 
 @app.route("/templates", methods=["GET", "POST"])

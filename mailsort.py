@@ -53,11 +53,20 @@ def extract_pages(pdf_path: Path, ocr_dpi: int = 200, min_chars: int = 40,
                   progress=None, workers: int = 4) -> list[dict]:
     """Return [{page: 1, text: ..., source: 'text'|'ocr'}] for every page. OCR runs in parallel."""
     from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image
     doc = fitz.open(pdf_path)
     pages, jobs = [], {}
     for i, page in enumerate(doc):
         text = page.get_text("text").strip()
         rec = {"page": i + 1, "text": text, "source": "text"}
+        # low-res JPEG of every page so the AI can READ the address from the image, not just trust OCR
+        try:
+            pix = page.get_pixmap(dpi=110)
+            img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+            buf = io.BytesIO(); img.save(buf, "JPEG", quality=60)
+            rec["_img"] = buf.getvalue()
+        except Exception:
+            rec["_img"] = None
         if len(text) < min_chars:  # scanned image – render now, OCR later in parallel
             jobs[i] = page.get_pixmap(dpi=ocr_dpi).tobytes("png")
             rec["source"] = "ocr"
@@ -81,12 +90,15 @@ def extract_pages(pdf_path: Path, ocr_dpi: int = 200, min_chars: int = 40,
 # ----------------------------------------------------------------------------- 2. classify
 
 CLASSIFY_SYSTEM = """You sort scanned post for a virtual business address provider.
-You receive the OCR text of ONE page of a bulk scan, plus the text of the previous page and the
-list of client company names. Decide:
+You receive an IMAGE of ONE page of a bulk scan together with its OCR text, plus the text of the
+previous page. The OCR text can be garbled – READ THE IMAGE YOURSELF, especially the recipient
+address block, the unit/SIU number and the company name; the image is the ground truth. Decide:
 
-- recipient_company: the company the letter is addressed to (as printed on the page). Use the
-  closest match from the client list when the OCR clearly refers to one of them; otherwise the
-  name as printed; "" if the page has no addressee (e.g. a continuation sheet or blank page).
+- recipient_company: the company name EXACTLY as printed on the page, copied letter-for-letter
+  from the image. NEVER replace it with a similar-looking company name and never "correct" it to
+  a company you think it should be – letters are sometimes addressed to companies that are NOT
+  clients, and the exact printed name decides whether the letter is held or delivered.
+  "" if the page has no addressee (e.g. a continuation sheet or blank page).
 - is_continuation: true if this page is a later page of the SAME letter/document as the previous page.
   Strong signals: NO fresh recipient address block, page numbering ("2 of 3", "Page 2"), same sender,
   same subject or reference number, text that carries on mid-sentence, statement/table rows continuing,
@@ -110,14 +122,21 @@ def classify_pages_with_ai(pages: list[dict], client_names: list[str], model: st
     out = []
     prev_text = ""
     for p in pages:
+        # NOTE: the client list is deliberately NOT given to the classifier – it must report the
+        # name exactly as printed, never snap it to a known client (that caused a misdelivery).
         user = (
-            f"CLIENT LIST:\n" + "\n".join(f"- {c}" for c in client_names) +
-            f"\n\nPREVIOUS PAGE TEXT (may be empty):\n<<<\n{prev_text[:2500]}\n>>>\n\n"
+            f"PREVIOUS PAGE TEXT (may be empty):\n<<<\n{prev_text[:2500]}\n>>>\n\n"
             f"THIS PAGE (page {p['page']}) TEXT:\n<<<\n{p['text'][:6000]}\n>>>"
         )
+        content = []
+        if p.get("_img"):
+            import base64
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                        "data": base64.b64encode(p["_img"]).decode()}})
+        content.append({"type": "text", "text": user})
         resp = client.messages.create(
             model=model, max_tokens=400, system=CLASSIFY_SYSTEM,
-            messages=[{"role": "user", "content": user}],
+            messages=[{"role": "user", "content": content}],
         )
         raw = resp.content[0].text.strip()
         raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.M).strip()
@@ -167,6 +186,23 @@ SIU_RE = re.compile(r"(?<![A-Z0-9])[S5]\s?[I1l|]\s?U(?![A-Z])", re.I)
 
 def has_siu(text: str) -> bool:
     return bool(SIU_RE.search(text or ""))
+
+
+# Unit/SIU number as printed in an address, e.g. "SIU A1049", "Unit A80", "Suite 12B", "Office A-80"
+UNIT_RE = re.compile(r"(?:SIU|UNIT|SUITE|OFFICE)\s*(?:NO\.?|#|:|-)?\s*([A-Z]{0,2}\s?-?\d{1,5}[A-Z]?)", re.I)
+
+
+def normalise_unit(s: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
+def extract_unit(*texts: str) -> str:
+    """First unit/SIU number found in the given texts (address block first, then page text)."""
+    for text in texts:
+        m = UNIT_RE.search(text or "")
+        if m:
+            return normalise_unit(m.group(1))
+    return ""
 
 
 # ----------------------------------------------------------------------------- 3. group
@@ -253,8 +289,106 @@ def load_clients(path: Path) -> list[dict]:
         rows = list(csv.DictReader(f))
     for r in rows:
         r["_norm"] = normalise_name(r.get("company_name", ""))
+        r["_unit"] = normalise_unit(r.get("siu") or r.get("unit") or "")
         apply_service_expiry(r)
     return rows
+
+
+def top_candidates(name: str, clients: list[dict], k: int = 8):
+    """Best-scoring clients for a printed name, for ambiguity checks and AI verification."""
+    n = normalise_name(name)
+    scored = []
+    for c in clients:
+        if not c["_norm"]:
+            continue
+        s = difflib.SequenceMatcher(None, n, c["_norm"]).ratio()
+        if _token_subset(n, c["_norm"]):
+            s = max(s, 0.9)
+        if c["_norm"] == n:
+            s = 1.0
+        scored.append((s, c))
+    scored.sort(key=lambda x: -x[0])
+    return scored[:k]
+
+
+VERIFY_SYSTEM = """You verify that scanned post is routed to the correct client of a virtual business
+address provider. These are CONFIDENTIAL documents – a wrong match sends one company's post to another.
+
+You get: the addressee and address exactly as printed on the letter (may contain OCR errors), the unit
+number found on it (if any), and a numbered list of candidate clients (name + unit number + the
+registered address we hold for them). Compare the printed address against each candidate's registered
+address as well as the names – matching address details are strong evidence, conflicting ones are
+strong evidence AGAINST.
+
+Decide which candidate the letter is really for. Company names can differ by OCR noise ("lnoviox" vs
+"Inoviox") but BEWARE of genuinely different companies with similar names ("Inoviox Solutions" vs
+"Innovex Solution") – if two candidates are plausible and the unit number does not settle it, you must
+answer unsure. Only answer with a candidate when you are confident beyond reasonable doubt.
+
+Respond with ONLY JSON: {"choice": <candidate number, or 0 if none/unsure>, "confident": true/false,
+"reason": "<one short sentence>"}"""
+
+
+def ai_verify_match(letter: dict, candidates: list[dict], model: str, api_key: str | None):
+    """Ask the AI which candidate the letter belongs to. Returns (client_or_None, confident, reason)."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    listing = "\n".join(f"{i}. {c['company_name']} (unit: {c.get('siu') or c.get('_unit') or 'none'}; "
+                         f"registered address: {c.get('address') or 'not on file'})"
+                         for i, c in enumerate(candidates, 1))
+    user = (f"LETTER ADDRESSEE (as printed): {letter.get('recipient_company') or '(none)'}\n"
+            f"FULL ADDRESS ON LETTER: {letter.get('address') or '(none)'}\n"
+            f"UNIT NUMBER FOUND ON LETTER: {letter.get('unit') or '(none)'}\n\n"
+            f"CANDIDATE CLIENTS:\n{listing}")
+    resp = client.messages.create(model=model, max_tokens=200, system=VERIFY_SYSTEM,
+                                  messages=[{"role": "user", "content": user}])
+    raw = re.sub(r"^```(?:json)?|```$", "", resp.content[0].text.strip(), flags=re.M).strip()
+    try:
+        d = json.loads(raw)
+        i = int(d.get("choice") or 0)
+        if 1 <= i <= len(candidates) and d.get("confident"):
+            return candidates[i - 1], True, d.get("reason", "")
+        return (candidates[i - 1] if 1 <= i <= len(candidates) else None), False, d.get("reason", "")
+    except Exception:
+        return None, False, "verification reply could not be parsed"
+
+
+def _token_subset(a: str, b: str) -> bool:
+    """True when every WORD of one normalised name appears in the other (word-boundary check).
+    Replaces the old raw-substring boost, which wrongly treated e.g. 'one solutions' as part of
+    'connexusone solutions'."""
+    ta, tb = set(a.split()), set(b.split())
+    return bool(ta) and bool(tb) and (ta <= tb or tb <= ta)
+
+
+# Words so common in company names that sharing them proves nothing about identity.
+GENERIC_NAME_WORDS = {
+    "solutions", "solution", "services", "service", "group", "consulting", "consultancy",
+    "trading", "enterprises", "enterprise", "ventures", "venture", "holdings", "holding",
+    "international", "global", "digital", "tech", "technologies", "technology", "media",
+    "marketing", "management", "capital", "partners", "associates", "network", "networks",
+    "systems", "logistics", "construction", "properties", "property", "investments",
+    "commerce", "online", "store", "shop", "studio", "design", "academy", "london",
+}
+
+
+def names_agree(printed: str, client_name: str) -> bool:
+    """True when the name printed on a letter is plausibly the SAME company as client_name.
+    Used to stop a unit-number match delivering post addressed to a DIFFERENT company
+    (e.g. a letter for 'MOVIQO SOLUTIONS LTD' must never go to 'Inoviox Solutions Ltd' just
+    because the unit numbers coincide – the distinctive words 'moviqo'/'inoviox' disagree)."""
+    a, b = normalise_name(printed), normalise_name(client_name)
+    if not a or not b:
+        return True  # nothing printed – the unit number is all the evidence there is
+    if a == b or _token_subset(a, b):
+        return True
+    da = [t for t in a.split() if t not in GENERIC_NAME_WORDS and len(t) > 1]
+    db = [t for t in b.split() if t not in GENERIC_NAME_WORDS and len(t) > 1]
+    if da and db:
+        best = max(difflib.SequenceMatcher(None, x, y).ratio() for x in da for y in db)
+        best = max(best, difflib.SequenceMatcher(None, "".join(da), "".join(db)).ratio())
+        return best >= 0.75  # allows OCR slips ('SW1FTIQ'≈'swiftiq'), rejects different companies
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
 
 
 def match_client(name: str, clients: list[dict], threshold: float = 0.80):
@@ -268,11 +402,103 @@ def match_client(name: str, clients: list[dict], threshold: float = 0.80):
         if c["_norm"] == n:
             return c, 1.0
         s = difflib.SequenceMatcher(None, n, c["_norm"]).ratio()
-        if c["_norm"] in n or n in c["_norm"]:
+        if _token_subset(n, c["_norm"]):
             s = max(s, 0.9)
         if s > best_score:
             best, best_score = c, s
     return (best, best_score) if best_score >= threshold else (None, best_score)
+
+
+def match_letters(letters: list[dict], clients: list[dict], page_text: dict | None = None,
+                  use_ai: bool = True, api_key: str | None = None, model: str | None = None):
+    """Match each letter to a client using the full safety policy (unit-first, AI verification,
+    hold-not-guess). Mutates the letter dicts in place. Called by run_batch on a fresh batch and
+    by the app's "Re-check held letters" button after a CSV update (page_text=None then – the
+    stored address/unit on each letter is reused)."""
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    model = model or os.environ.get("MAILSORT_MODEL", "claude-sonnet-4-5")
+    page_text = page_text or {}
+    unit_counts: dict = {}
+    for c in clients:
+        if c.get("_unit"):
+            unit_counts[c["_unit"]] = unit_counts.get(c["_unit"], 0) + 1
+    dup_units = {u for u, n in unit_counts.items() if n > 1}
+    by_unit = {c["_unit"]: c for c in clients if c.get("_unit") and c["_unit"] not in dup_units}
+    for L in letters:
+        first_text = page_text.get(L["pages"][0], "") if L.get("pages") else ""
+        L["unit"] = extract_unit(L.get("address", ""), first_text) or L.get("unit") or ""
+        L["unit_mismatch"] = False
+        c, s, matched_by = None, 0.0, ""
+        L["match_state"], L["match_note"] = "review", ""
+        L.pop("suggested_client", None)
+        if L["unit"] and L["unit"] in dup_units:
+            L["match_note"] = f"unit {L['unit']} is assigned to MORE THAN ONE client in the database – fix the client list"
+            c, s = match_client(L["recipient_company"], clients)
+            matched_by = "name" if c else ""
+        elif L["unit"] and L["unit"] in by_unit:
+            c0 = by_unit[L["unit"]]
+            if names_agree(L.get("recipient_company", ""), c0["company_name"]):
+                c, s, matched_by = c0, 1.0, "unit"
+                L["match_state"] = "verified"
+                L["match_note"] = "unit number match"
+            else:
+                # Unit says c0, but the letter is printed for a clearly DIFFERENT company
+                # (e.g. MOVIQO SOLUTIONS at a unit recorded for Inoviox). Never deliver on the
+                # unit number alone – hold for staff.
+                L["match_state"] = "review"
+                L["match_note"] = (f"unit {L['unit']} is recorded for {c0['company_name']}, but the letter is "
+                                   f"addressed to '{L.get('recipient_company') or 'an unreadable name'}' – a different "
+                                   f"company. HELD – check the letter and the client list before assigning.")
+                L["suggested_client"] = c0["company_name"]
+                c, s, matched_by = None, 0.0, ""
+        else:
+            c, s = match_client(L["recipient_company"], clients)
+            matched_by = "name" if c else ""
+            if c and L["unit"] and c.get("_unit") and c["_unit"] != L["unit"]:
+                L["unit_mismatch"] = True
+            cands = top_candidates(L["recipient_company"], clients)
+            runner_up = cands[1][0] if len(cands) > 1 else 0.0
+            ambiguous = (c is None) or L["unit_mismatch"] or s < 0.97 or (runner_up >= s - 0.08)
+            if c and not ambiguous:
+                L["match_state"] = "verified"
+                L["match_note"] = "exact name match"
+            elif c and use_ai and api_key and not L["unit_mismatch"]:
+                # AI double-check against the plausible candidates – confidential post must not be guessed
+                try:
+                    pick, confident, reason = ai_verify_match(L, [x[1] for x in cands], model, api_key)
+                except Exception as ex:
+                    pick, confident, reason = None, False, f"verification failed: {ex}"
+                if pick is not None and confident:
+                    c, s, matched_by = pick, 1.0, "ai-verified"
+                    L["match_state"] = "verified"
+                    L["match_note"] = reason
+                else:
+                    L["match_state"] = "review"
+                    L["match_note"] = reason or "AI not confident"
+                    if pick is not None:
+                        L["suggested_client"] = pick["company_name"]
+        if c is not None and L["match_state"] == "review" and matched_by == "name" and s < 0.93:
+            # too weak to even tentatively assign confidential post – hold as unmatched, keep the hint for staff
+            L["suggested_client"] = L.get("suggested_client") or c["company_name"]
+            c, s, matched_by = None, 0.0, ""
+        L["client"], L["match_score"], L["matched_by"] = c, s, matched_by
+        reasons = []
+        if c and L["match_state"] == "review":
+            reasons.append("MATCH NOT VERIFIED – staff must confirm before sending")
+        if not c and L["match_state"] == "review" and L.get("suggested_client"):
+            reasons.append(f"HELD – no reliable match (possible: {L['suggested_client']}) – staff must assign")
+        if L["unit_mismatch"]:
+            reasons.append(f"UNIT MISMATCH – letter shows unit {L['unit']}, but {c['company_name']} is unit {c.get('siu') or c.get('_unit')}")
+        if not c: reasons.append("no client match")
+        elif s < 0.95 and matched_by != "unit": reasons.append("fuzzy match")
+        if c and (c.get("status") or "").lower() not in STATUS_OK: reasons.append(f"status={c.get('status')}")
+        if c and not c.get("email"): reasons.append("no email on file")
+        if not L.get("siu_ok", True): reasons.append("SIU OFFICE MISSING")
+        if c and (c.get("kyc") or "").lower() == "no": reasons.append("KYC NOT DONE")
+        L["in_package"] = letter_in_package(L, c)
+        if not L["in_package"]: reasons.append(f"not in {c.get('package')} package")
+        L["needs_review"] = "; ".join(reasons)
+    return letters
 
 
 # ----------------------------------------------------------------------------- 5. split
@@ -398,16 +624,17 @@ def build_emails(letters: list[dict], out_dir: Path, sender_name: str, today: st
 def write_manifest(letters, emails, out_dir: Path, batch_tag: str, today: str):
     with open(out_dir / "manifest.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["batch", "letter_id", "pages", "recipient_as_printed", "address_as_printed", "matched_client", "client_id",
+        w.writerow(["batch", "letter_id", "pages", "recipient_as_printed", "address_as_printed", "client_address_on_file", "matched_client", "client_id",
                     "match_score", "client_status", "client_email", "sender", "letter_type", "urgency",
-                    "summary", "file", "siu_office", "in_package", "reseller", "kyc", "needs_review"])
+                    "summary", "file", "siu_office", "unit_on_letter", "matched_by", "in_package", "reseller", "kyc", "needs_review"])
         for L in letters:
             c = L.get("client") or {}
             w.writerow([batch_tag, L["letter_id"], "-".join(map(str, L["pages"])) if len(L["pages"]) > 1 else L["pages"][0],
-                        L["recipient_company"], L.get("address", ""), c.get("company_name", ""), c.get("client_id", ""),
+                        L["recipient_company"], L.get("address", ""), c.get("address", ""), c.get("company_name", ""), c.get("client_id", ""),
                         f"{L['match_score']:.2f}", c.get("status", ""), c.get("email", ""), L["sender"],
                         L["letter_type"], L["urgency"], L["summary"], L.get("file", ""),
                         "yes" if L.get("siu_ok", True) else "MISSING",
+                        L.get("unit", ""), L.get("matched_by", ""),
                         "yes" if L.get("in_package", True) else "EXCLUDED",
                         c.get("reseller", "") or ("Direct" if c else ""), c.get("kyc", ""), L["needs_review"]])
 
@@ -459,7 +686,8 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
 
     status(f"Reading {pdf.name} …", 0.0)
     pages = extract_pages(pdf, progress=lambda d, n: status(f"OCR page {d}/{n}", 0.05 + 0.40 * d / max(n, 1)))
-    (out / "pages.json").write_text(json.dumps(pages, indent=1), encoding="utf-8")
+    (out / "pages.json").write_text(json.dumps([{k: v for k, v in pg.items() if not k.startswith("_")}
+                                                 for pg in pages], indent=1), encoding="utf-8")
     status(f"{len(pages)} pages read ({sum(p['source']=='ocr' for p in pages)} OCR'd)", 0.45)
 
     if classification:
@@ -486,19 +714,7 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
         L["siu_ok"] = has_siu(page_text.get(L["pages"][0], ""))
 
     status("Matching letters to clients …", 0.90)
-    for L in letters:
-        c, s = match_client(L["recipient_company"], clients)
-        L["client"], L["match_score"] = c, s
-        reasons = []
-        if not c: reasons.append("no client match")
-        elif s < 0.95: reasons.append("fuzzy match")
-        if c and (c.get("status") or "").lower() not in STATUS_OK: reasons.append(f"status={c.get('status')}")
-        if c and not c.get("email"): reasons.append("no email on file")
-        if not L.get("siu_ok", True): reasons.append("SIU OFFICE MISSING")
-        if c and (c.get("kyc") or "").lower() == "no": reasons.append("KYC NOT DONE")
-        L["in_package"] = letter_in_package(L, c)
-        if not L["in_package"]: reasons.append(f"not in {c.get('package')} package")
-        L["needs_review"] = "; ".join(reasons)
+    match_letters(letters, clients, page_text, use_ai=use_ai, api_key=api_key, model=model)
 
     status("Splitting PDF …", 0.93)
     split_letters(pdf, letters, out, batch_tag)
