@@ -104,6 +104,10 @@ address block, the unit/SIU number and the company name; the image is the ground
   same subject or reference number, text that carries on mid-sentence, statement/table rows continuing,
   terms and conditions or appendix pages. Many multi-page documents only show the address on page 1 –
   a page with no recipient address that plausibly follows on is a continuation, NOT a new letter.
+  HOWEVER: a page that shows a recipient address block for a DIFFERENT company or a different
+  unit number than the previous page is NEVER a continuation – it starts a NEW letter, whatever
+  the layout looks like. These are confidential documents: putting one company's page inside
+  another company's letter is the worst possible error.
 - is_blank: true if the page is essentially empty (scanner separator, back of a sheet).
 - sender: organisation that sent the letter (HMRC, Companies House, a bank, a supplier, ...).
 - letter_type: one of official_government, bank_financial, legal, invoice_bill, marketing, personal, other.
@@ -226,12 +230,33 @@ def group_letters(classified: list[dict], auto_merge: bool = True) -> list[dict]
     for c in classified:
         if c.get("is_blank"):
             continue
+        group_note = ""
         if current is not None and c.get("is_continuation"):
-            current["pages"].append(c["page"])
-            continue
+            # SAFETY: never staple a page onto the previous letter if the page itself is
+            # addressed to a DIFFERENT company – a wrong "continuation" flag must not put
+            # one company's page inside another company's PDF.
+            page_name = (c.get("recipient_company") or "").strip()
+            page_addr = (c.get("address") or "").strip()
+            cur_name = (current.get("recipient_company") or "").strip()
+            page_unit = extract_unit(page_addr)
+            cur_unit = extract_unit(current.get("address", ""))
+            conflict = False
+            if page_name and cur_name and not names_agree(page_name, cur_name):
+                conflict = True
+            if page_unit and cur_unit and page_unit != cur_unit:
+                conflict = True
+            if page_name and page_addr and not cur_name:
+                conflict = True
+            if not conflict:
+                current["pages"].append(c["page"])
+                continue
+            group_note = (f"page {c['page']} looked like a continuation but is addressed to "
+                          f"'{page_name or 'a different company'}' – split into its own letter for safety; "
+                          f"check both letters' pages before sending")
         current = {"pages": [c["page"]], "address": c.get("address", ""), "recipient_company": c.get("recipient_company", ""),
                    "sender": c.get("sender", ""), "letter_type": c.get("letter_type", "other"),
-                   "urgency": c.get("urgency", "normal"), "summary": c.get("summary", "")}
+                   "urgency": c.get("urgency", "normal"), "summary": c.get("summary", ""),
+                   "group_note": group_note}
         letters.append(current)
     if auto_merge:
         letters = merge_orphans(letters)
@@ -240,18 +265,42 @@ def group_letters(classified: list[dict], auto_merge: bool = True) -> list[dict]
     return letters
 
 
+def flag_mixed_pages(letters: list[dict], page_text: dict):
+    """Second net: inside a multi-page letter, a later page whose TEXT carries a different
+    unit number than the letter's own is probably another company's page the classifier
+    missed – hold the letter so staff open the PDF and check every page."""
+    for L in letters:
+        pages = L.get("pages") or []
+        if len(pages) < 2:
+            continue
+        lu = extract_unit(L.get("address", ""), page_text.get(pages[0], ""))
+        if not lu:
+            continue
+        for p in pages[1:]:
+            pu = extract_unit(page_text.get(p, ""))
+            if pu and pu != lu:
+                L["mixed_note"] = (f"page {p} of this letter shows unit {pu}, but the letter is for unit {lu} – "
+                                   f"another company's page may be mixed in. Open the PDF and check every page "
+                                   f"(use Merge/assign to fix) before sending anything.")
+                break
+
+
 # ----------------------------------------------------------------------------- 4. match
 
-def parse_date(s: str):
-    """Very tolerant date reader: ISO, UK formats, Excel exports, month names, 2-digit years."""
+def parse_date(s: str, prefer: str = "dmy"):
+    """Very tolerant date reader: ISO, UK formats, US formats, Excel exports, month names,
+    2-digit years. prefer='mdy' reads ambiguous slash dates as American month-first
+    (the client-CSV upload detects per file which style the export uses)."""
     s = (s or "").strip()
     if not s:
         return None
     s = s.split("T")[0].strip()               # drop time part of ISO timestamps
     if " " in s and ":" in s:
-        s = s.split(" ")[0]                    # drop "12:00:00" style time
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d", "%Y.%m.%d",
-                "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
+        s = s.split(" ")[0]                    # drop "12:00:00" / "0:00" style time
+    dmy = ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y")
+    mdy = ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y")
+    slashy = (mdy + dmy) if prefer == "mdy" else (dmy + mdy)
+    for fmt in ("%Y-%m-%d",) + slashy + ("%Y/%m/%d", "%Y.%m.%d",
                 "%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%b-%y", "%d %b %y",
                 "%b %d %Y", "%B %d %Y", "%b %d, %Y", "%B %d, %Y", "%Y%m%d"):
         try:
@@ -482,7 +531,16 @@ def match_letters(letters: list[dict], clients: list[dict], page_text: dict | No
             L["suggested_client"] = L.get("suggested_client") or c["company_name"]
             c, s, matched_by = None, 0.0, ""
         L["client"], L["match_score"], L["matched_by"] = c, s, matched_by
+        if L.get("mixed_note") and L["match_state"] == "verified":
+            # pages may belong to two companies – never auto-send, staff must check the PDF
+            L["match_state"] = "review"
+            L["match_note"] = ("pages may belong to two different companies – "
+                               + (L.get("match_note") or "")).strip(" –")
         reasons = []
+        if L.get("mixed_note"):
+            reasons.append("⚠ MIXED PAGES? " + L["mixed_note"])
+        if L.get("group_note"):
+            reasons.append("SPLIT FOR SAFETY – " + L["group_note"])
         if c and L["match_state"] == "review":
             reasons.append("MATCH NOT VERIFIED – staff must confirm before sending")
         if not c and L["match_state"] == "review" and L.get("suggested_client"):
@@ -677,8 +735,8 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
     """Run the whole pipeline. `status(message, fraction)` is called with progress updates.
     Returns {"letters": [...], "emails": [...], "batch": tag, "out": out}."""
     out.mkdir(parents=True, exist_ok=True)
-    today = dt.date.today().isoformat()
-    batch_tag = batch_tag or f"{today}_{slug(pdf.stem, 20)}"
+    today = dt.date.today().strftime("%d/%m/%Y")   # shown in emails + manifest (DD/MM/YYYY everywhere)
+    batch_tag = batch_tag or f"{dt.date.today().isoformat()}_{slug(pdf.stem, 20)}"  # folder-safe, no slashes
     clients = load_clients(clients_csv)
     client_names = [c["company_name"] for c in clients]
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -712,6 +770,9 @@ def run_batch(pdf: Path, clients_csv: Path, out: Path, *, batch_tag: str | None 
     page_text = {pg["page"]: pg["text"] for pg in pages}
     for L in letters:
         L["siu_ok"] = has_siu(page_text.get(L["pages"][0], ""))
+
+    status("Checking multi-page letters for mixed-in pages …", 0.895)
+    flag_mixed_pages(letters, page_text)
 
     status("Matching letters to clients …", 0.90)
     match_letters(letters, clients, page_text, use_ai=use_ai, api_key=api_key, model=model)
