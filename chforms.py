@@ -35,10 +35,13 @@ CH_API = "https://api.company-information.service.gov.uk"
 SIU = {"building_name": "SIU Offices", "premise": "4-6", "street": "Greatorex Street",
        "town": "London", "county": "", "postcode": "E1 5NF", "country": "United Kingdom"}
 
-DOCS = {
-    "ad01": ("AD01 + Proof of Registered Office Address letter", "AD01.pdf", "Letter_Registered_Office.docx"),
-    "ch01": ("CH01 + Proof of Director's Correspondence Address letter", "CH01.pdf", "Letter_Director.docx"),
-    "psc04": ("PSC04 + Proof of PSC Correspondence Address letter", "PSC04.pdf", "Letter_PSC.docx"),
+DOCS = {   # key: (label shown to staff, template file, group)
+    "ad01": ("AD01 – Change of registered office address", "AD01.pdf", "Registered office"),
+    "ro_letter": ("Proof of Registered Office Address letter", "Letter_Registered_Office.docx", "Registered office"),
+    "ch01": ("CH01 – Change of director's details", "CH01.pdf", "Directors"),
+    "dir_letter": ("Proof of Director's Correspondence Address letter", "Letter_Director.docx", "Directors"),
+    "psc04": ("PSC04 – Change of PSC details", "PSC04.pdf", "PSCs"),
+    "psc_letter": ("Proof of PSC Correspondence Address letter", "Letter_PSC.docx", "PSCs"),
 }
 
 bp = Blueprint("chforms", __name__)
@@ -369,7 +372,7 @@ def _people(prefix: str) -> list[dict]:
 
 @bp.get("/forms")
 def forms_home():
-    missing = [f for _, a, b in DOCS.values() for f in (a, b) if not (TPL_DIR / f).exists()]
+    missing = [t for _, t, _g in DOCS.values() if not (TPL_DIR / t).exists()]
     return render_template_string(PAGE, siu=SIU, docs=DOCS, log=_load_log()[:40], missing=missing,
                                   has_key=bool(os.environ.get("CH_API_KEY", "").strip()),
                                   today=dt.date.today().isoformat())
@@ -405,12 +408,14 @@ def forms_generate():
     if not ref:
         errs.append("Enter the portal reference.")
     directors, pscs = _people("dir"), _people("psc")
-    if "ch01" in docs and not directors:
-        errs.append("CH01 ticked but no director selected.")
-    if "psc04" in docs and not pscs:
-        errs.append("PSC04 ticked but no PSC selected.")
+    need_dir = "ch01" in docs or "dir_letter" in docs
+    need_psc = "psc04" in docs or "psc_letter" in docs
+    if need_dir and not directors:
+        errs.append("A director document is ticked but no director is selected.")
+    if need_psc and not pscs:
+        errs.append("A PSC document is ticked but no PSC is selected.")
     auth = (f.get("auth_name") or "").strip().upper()
-    if not auth:
+    if not auth and any(k in docs for k in ("ad01", "ch01", "psc04")):
         errs.append("Enter the name of the director authenticating the forms.")
     try:
         change = dt.date.fromisoformat(f.get("change_date") or "")
@@ -442,27 +447,32 @@ def forms_generate():
         if "ad01" in docs:
             save(f"{num}_AD01.pdf", fill_pdf(TPL_DIR / "AD01.pdf", ad01_values(company, addr, auth)), "pdf",
                  "AD01 – Change of registered office address")
+        if "ro_letter" in docs:
             save(f"{num}_Proof_of_Registered_Office_Address.docx",
                  fill_letter(TPL_DIR / "Letter_Registered_Office.docx", issued=issued, company=name, number=num,
                              lines=letter_lines, account_id=acct), "docx", "Proof of Registered Office Address")
-        if "ch01" in docs:
+        if need_dir:
             for p in directors:
                 full = f"{p['forenames']} {p['surname']}".strip()
                 tag = _safe(p["surname"] + "_" + p["forenames"].split(" ")[0] if p["forenames"] else p["surname"])
-                save(f"{num}_CH01_{tag}.pdf",
+                if "ch01" in docs:
+                  save(f"{num}_CH01_{tag}.pdf",
                      fill_pdf(TPL_DIR / "CH01.pdf", ch01_values(company, p, addr, change, auth, bool(f.get("no_ura_change")))),
                      "pdf", f"CH01 – Change of director's details – {full}")
-                save(f"{num}_Proof_of_Directors_Correspondence_Address_{tag}.docx",
+                if "dir_letter" in docs:
+                  save(f"{num}_Proof_of_Directors_Correspondence_Address_{tag}.docx",
                      fill_letter(TPL_DIR / "Letter_Director.docx", issued=issued, company=name, number=num,
                                  lines=letter_lines, person=full, account_id=acct), "docx",
                      f"Proof of Director's Correspondence Address – {full}")
-        if "psc04" in docs:
+        if need_psc:
             for p in pscs:
                 full = f"{p['forenames']} {p['surname']}".strip()
                 tag = _safe(p["surname"] + "_" + p["forenames"].split(" ")[0] if p["forenames"] else p["surname"])
-                save(f"{num}_PSC04_{tag}.pdf", fill_pdf(TPL_DIR / "PSC04.pdf", psc04_values(company, p, addr, change, auth)),
+                if "psc04" in docs:
+                  save(f"{num}_PSC04_{tag}.pdf", fill_pdf(TPL_DIR / "PSC04.pdf", psc04_values(company, p, addr, change, auth)),
                      "pdf", f"PSC04 – Change of PSC details – {full}")
-                save(f"{num}_Proof_of_PSC_Correspondence_Address_{tag}.docx",
+                if "psc_letter" in docs:
+                  save(f"{num}_Proof_of_PSC_Correspondence_Address_{tag}.docx",
                      fill_letter(TPL_DIR / "Letter_PSC.docx", issued=issued, company=name, number=num,
                                  lines=letter_lines, person=full, account_id=acct), "docx",
                      f"Proof of PSC Correspondence Address – {full}")
@@ -473,8 +483,8 @@ def forms_generate():
     meta = {"job": job, "when": dt.datetime.now().isoformat(timespec="seconds"), "number": num, "company": name,
             "docs": docs, "portal_ref": ref, "unit": unit, "address": addr, "letter_lines": letter_lines,
             "change_date": change.isoformat(), "issue_date": issued.isoformat(), "auth": auth,
-            "directors": [f"{p['forenames']} {p['surname']}" for p in directors] if "ch01" in docs else [],
-            "pscs": [f"{p['forenames']} {p['surname']}" for p in pscs] if "psc04" in docs else [],
+            "directors": [f"{p['forenames']} {p['surname']}" for p in directors] if need_dir else [],
+            "pscs": [f"{p['forenames']} {p['surname']}" for p in pscs] if need_psc else [],
             "account_id": acct, "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin"),
             "files": files}
     (d / "job.json").write_text(json.dumps(meta, indent=1))
@@ -582,7 +592,9 @@ Companies House register. Templates are used exactly as supplied – only the cl
 <div class="addrprev" id="addrprev" style="margin-top:10px"></div>
 
 <h2 style="margin-top:20px">Documents needed</h2>
-{% for k, d in docs.items() %}<label class="tick"><input type="checkbox" name="doc_{{k}}" value="1" id="doc_{{k}}"> {{d[0]}}</label>{% endfor %}
+<p class="muted" style="margin-top:0">Tick each document you need – forms and letters can be chosen separately.</p>
+<div class="fgrid">{% for g in ["Registered office", "Directors", "PSCs"] %}<div class="addrprev" style="margin-bottom:8px"><b>{{g}}</b>
+{% for k, d in docs.items() if d[2] == g %}<label class="tick"><input type="checkbox" name="doc_{{k}}" value="1" id="doc_{{k}}"> {{d[0]}}</label>{% endfor %}</div>{% endfor %}</div>
 
 <div class="fgrid" style="margin-top:8px">
  <div><label>Date of change (CH01 / PSC04)</label><input type="date" name="change_date" value="{{today}}"></div>
@@ -603,7 +615,7 @@ Companies House register. Templates are used exactly as supplied – only the cl
 {% if log %}<div class="card"><h2>Recently created</h2>
 <table><tr><th>Created</th><th>Company</th><th>Documents</th><th>Unit</th><th>Portal ref</th><th>By</th><th></th></tr>
 {% for x in log %}<tr><td>{{x.when|ukdate}}</td><td>{{x.company}}<br><span class="muted">{{x.number}}</span></td>
-<td>{{ x.docs|map('upper')|join(', ') }} <span class="muted">({{x.nfiles}} files)</span></td><td>{{x.unit or '—'}}</td><td>{{x.portal_ref}}</td><td>{{x.staff}}</td>
+<td>{{ x.docs|join(', ')|replace('ro_letter','RO letter')|replace('dir_letter','director letter')|replace('psc_letter','PSC letter')|upper }} <span class="muted">({{x.nfiles}} files)</span></td><td>{{x.unit or '—'}}</td><td>{{x.portal_ref}}</td><td>{{x.staff}}</td>
 <td><a class="btn small secondary" href="/forms/job/{{x.job}}">Open</a></td></tr>{% endfor %}</table></div>{% endif %}
 
 <script>
