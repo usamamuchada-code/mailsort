@@ -174,12 +174,30 @@ def _company(num: str, name: str) -> dict:
     return f
 
 
+def _presenter(nums: dict, c: dict, addr: dict, contact: str) -> dict:
+    """Presenter information box: contact = authenticating director, company = client, address = new address."""
+    f = {f"Text Field {nums['contact']}": contact, f"Text Field {nums['company']}": c["name"],
+         f"Text Field {nums['addr'][0]}": addr["building"], f"Text Field {nums['addr'][1]}": addr["street"],
+         f"Text Field {nums['addr'][2]}": addr["street2"], f"Text Field {nums['town']}": addr["town"],
+         f"Text Field {nums['county']}": addr["county"], f"Text Field {nums['country']}": addr["country"]}
+    f.update(_boxes(nums["postcode"], addr["postcode"], 8))
+    return f
+
+
+PRESENTER = {
+    "AD01": {"contact": 26, "company": 27, "addr": (29, 30, 31), "town": 32, "county": 33, "postcode": 34, "country": 42},
+    "CH01": {"contact": 62, "company": 63, "addr": (65, 66, 67), "town": 68, "county": 69, "postcode": 70, "country": 78},
+    "PSC04": {"contact": 70, "company": 71, "addr": (73, 74, 75), "town": 76, "county": 77, "postcode": 78, "country": 86},
+}
+
+
 def ad01_values(c: dict, addr: dict, auth: str) -> dict:
     f = _company(c["number"], c["name"])
     f.update({"Text Field 11": addr["building"], "Text Field 12": addr["street"], "Text Field 13": addr["street2"],
               "Text Field 14": addr["town"], "Text Field 15": addr["county"], "Text Field 24": addr["country"],
               "Text Field 25": auth, "Check Box 1": True})
     f.update(_boxes(16, addr["postcode"], 8))
+    f.update(_presenter(PRESENTER["AD01"], c, addr, auth))
     return f
 
 
@@ -192,6 +210,7 @@ def ch01_values(c: dict, person: dict, addr: dict, change: dt.date, auth: str, n
               "Text Field 34": addr["town"], "Text Field 35": addr["county"], "Text Field 44": addr["country"],
               "Check Box 1": bool(no_ura_change), "Text Field 61": auth})
     f.update(_boxes(36, addr["postcode"], 8))
+    f.update(_presenter(PRESENTER["CH01"], c, addr, auth))
     return f
 
 
@@ -205,6 +224,7 @@ def psc04_values(c: dict, person: dict, addr: dict, change: dt.date, auth: str) 
               "Text Field 69": auth})
     f.update(_boxes(36, addr["postcode"], 8))
     f.update(_boxes(61, _ddmmyyyy(change), 8))      # section 10 – date of confirmation
+    f.update(_presenter(PRESENTER["PSC04"], c, addr, auth))
     return f
 
 
@@ -318,12 +338,83 @@ def fill_letter(template: Path, *, issued: dt.date, company: str, number: str, l
     need = {"date", "company", "number", "address"} | ({"person"} if person else set())
     if need - hits:
         raise RuntimeError(f"Letter template {template.name} has changed – could not find: {', '.join(sorted(need - hits))}")
+    # footer: the template's date (e.g. 10/06/2026) becomes the issue date
+    new_parts = {"word/document.xml": xml}
+    fdate = issued.strftime("%d/%m/%Y")
+    for name in zin.namelist():
+        if re.fullmatch(r"word/footer\d*\.xml", name):
+            fx = zin.read(name).decode("utf-8")
+
+            def fpara(m):
+                p = m.group(0)
+                if re.fullmatch(r"\s*\d{1,2}/\d{1,2}/\d{4,5}\s*", _ptext(p)):
+                    return _set_texts(p, lambda j, o: fdate if j == 0 else "")
+                return p
+            new_parts[name] = re.sub(r"<w:p[ >].*?</w:p>", fpara, fx, flags=re.S)
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
-            data = xml.encode("utf-8") if item.filename == "word/document.xml" else zin.read(item.filename)
+            data = new_parts[item.filename].encode("utf-8") if item.filename in new_parts else zin.read(item.filename)
             zout.writestr(item, data)
     return out.getvalue()
+
+
+_LO_LOCK = threading.Lock()
+
+
+def _render_copy(docx: bytes, squeeze: float) -> bytes:
+    """Copy of the letter used ONLY for the PDF conversion.
+    - "Calibri Body"/"Arial MT" are Word aliases: name the real fonts so the converter keeps the template spacing.
+    - squeeze < 1 shrinks the EMPTY spacer lines (no text, no picture) so the QR code stays on page 1 when the
+      converter spaces lines a touch wider than Word."""
+    zi, buf = zipfile.ZipFile(io.BytesIO(docx)), io.BytesIO()
+
+    def spacer(m):
+        p = m.group(0)
+        if _ptext(p).strip() or "<w:drawing" in p or "<w:pict" in p or "<w:sectPr" in p:
+            return p
+        return re.sub(r'(<w:sz(?:Cs)? w:val=")(\d+)(")', lambda q: f"{q.group(1)}{max(2, int(int(q.group(2)) * squeeze))}{q.group(3)}", p)
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zo:
+        for it in zi.infolist():
+            b = zi.read(it.filename)
+            if it.filename.endswith(".xml"):
+                b = b.replace(b'"Calibri Body"', b'"Calibri"').replace(b'"Arial MT"', b'"Arial"')
+                if it.filename == "word/document.xml" and squeeze < 1:
+                    x = b.decode("utf-8")
+                    body = x.find("<w:body>")
+                    x = x[:body] + re.sub(r"<w:p[ >].*?</w:p>", spacer, x[body:], flags=re.S)
+                    b = x.encode("utf-8")
+            zo.writestr(it, b)
+    return buf.getvalue()
+
+
+def docx_to_pdf(docx: bytes) -> bytes | None:
+    """Convert a filled letter to PDF with LibreOffice (installed in the Docker image). None if unavailable.
+    Letters are one page; if the converter spills onto a 2nd page, retry with tighter spacer lines."""
+    import shutil, subprocess, tempfile
+    import pymupdf
+    exe = shutil.which("soffice") or shutil.which("libreoffice")
+    if not exe:
+        return None
+    best = None
+    with _LO_LOCK, tempfile.TemporaryDirectory() as tmp:
+        for squeeze in (1.0, 0.6, 0.35, 0.15):
+            src = Path(tmp) / "letter.docx"
+            src.write_bytes(_render_copy(docx, squeeze))
+            try:
+                subprocess.run([exe, f"-env:UserInstallation=file://{tmp}/profile", "--headless", "--norestore",
+                                "--convert-to", "pdf", "--outdir", tmp, str(src)],
+                               check=True, timeout=180, capture_output=True, env={**os.environ, "HOME": tmp})
+            except Exception as ex:
+                print(f"[chforms] PDF conversion failed: {ex}", flush=True)
+                return best
+            pdf = Path(tmp) / "letter.pdf"
+            if not pdf.exists():
+                return best
+            best = pdf.read_bytes()
+            if pymupdf.open(stream=best).page_count == 1:
+                return best
+    return best
 
 
 # ----------------------------------------------------------------------------- jobs / log
@@ -437,10 +528,16 @@ def forms_generate():
     job = uuid.uuid4().hex[:12]
     d = OUT / job
     d.mkdir(parents=True, exist_ok=True)
-    files = []
+    files, warn = [], []
     acct = (f.get("account_id") or "").strip()
     try:
         def save(fname, data, kind, label):
+            if kind == "docx":                       # letters are delivered as PDF
+                pdf = docx_to_pdf(data)
+                if pdf:
+                    fname, data, kind = fname[:-5] + ".pdf", pdf, "pdf"
+                else:
+                    warn.append(fname)
             (d / fname).write_bytes(data)
             files.append({"file": fname, "kind": kind, "label": label})
 
@@ -488,6 +585,8 @@ def forms_generate():
             "account_id": acct, "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin"),
             "files": files}
     (d / "job.json").write_text(json.dumps(meta, indent=1))
+    if warn:
+        flash("⚠ PDF conversion is not available on the server yet, so these letters are in Word format: " + ", ".join(warn))
     _append_log({k: meta[k] for k in ("job", "when", "number", "company", "docs", "portal_ref", "unit", "staff")} |
                 {"nfiles": len(files)})
     return redirect(f"/forms/job/{job}")
