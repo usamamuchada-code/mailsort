@@ -1,5 +1,5 @@
 """
-ITIN tab (v32a) – IRS Form W-7 + Form W-7 (COA) Certificate of Accuracy, prepared by Startitup Global Inc as a
+ITIN tab (v32b) – IRS Form W-7 + Form W-7 (COA) Certificate of Accuracy, prepared by Startitup Global Inc as a
 Certifying Acceptance Agent (CAA).
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config).
@@ -23,6 +23,8 @@ from flask import Blueprint, abort, flash, jsonify, redirect, render_template_st
 
 ROOT = Path(__file__).parent
 TPL_DIR = ROOT / "itin_templates"
+if not (TPL_DIR / "fw7.pdf").exists() and (ROOT / "fw7.pdf").exists():
+    TPL_DIR = ROOT                      # PDFs uploaded to the main folder of the repo instead – use them there
 DATA = Path(os.environ.get("DATA_DIR") or ROOT / "data")
 OUT = DATA / "itin"
 LOG_FILE = OUT / "log.json"
