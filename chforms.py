@@ -1,5 +1,5 @@
 """
-Company forms tab (v30a) – Companies House change forms + SIU proof-of-address letters.
+Company forms tab (v30b) – Companies House change forms + SIU proof-of-address letters.
 
 Self-contained add-on: app.py only imports this file and calls register(app).
 Nothing in the mail-sorting system is touched.
@@ -755,7 +755,8 @@ document.getElementById('num').addEventListener('keydown', function(e){ if(e.key
 function buildAddr(){
   var u = document.getElementById('unit').value.trim().replace(/^unit\s*/i,'');
   var U = u ? 'Unit '+u : '';
-  var v = {a_building: (U?U+', ':'')+SIU.premise, a_street: SIU.street, a_street2:'', a_town: SIU.town, a_county: SIU.county,
+  // v30b: forms carry "SIU Offices" too, so post addressed from the CH register is identifiable as ours
+  var v = {a_building: (U?U+', ':'')+SIU.building_name, a_street: SIU.premise+' '+SIU.street, a_street2:'', a_town: SIU.town, a_county: SIU.county,
            a_postcode: SIU.postcode, a_country: SIU.country,
            l_0: (U?U+', ':'')+SIU.building_name, l_1: SIU.premise+' '+SIU.street, l_2: SIU.town, l_3: SIU.postcode};
   for(var k in v) document.getElementById(k).value = v[k];
