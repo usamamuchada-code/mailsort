@@ -35,7 +35,8 @@ _CFG = {"fn": None}
 # Our Acceptance Agent details – defaults, editable (and saved) on the ITIN page.
 CAA_DEFAULT = {"responsible_party": "Moaz Ali Siddiqui", "name_title": "Moaz Ali Siddiqui, COO",
                "company": "Startitup Global Inc", "ein": "42-2709229", "ptin": "P03481333", "ptin_expiry": "2026-12-31",
-               "office_code": "00000001", "agreement_date": "2026-09-29", "phone": "406-605-9190", "fax": "806-615-2858"}
+               "office_code": "00000001", "agreement_date": "2026-09-29", "phone": "406-605-9190", "fax": "806-615-2858",
+               "notify_email": "accounting@startitup.global"}
 # Source: CAA agreement Sec. 3.02 (EIN 422709229), AA approval letter 5614C (07 Oct 2026, responsible party),
 # PTIN confirmation (Moaz Siddiqui P03481333). Office code 00000001 (Active, effective 29/09/2026) from the AA
 # Application Summary on the Registered User Portal (tracking 20260729144741339273, Customer ID 15331555).
@@ -472,7 +473,8 @@ IRS_ADDR = {   # Form W-7 mailing addresses (IRS "How do I apply for an ITIN?")
 }
 IRS_STATUS_PHONE = "512-433-5966"     # W-7 status line for acceptance agents (IRS letter 5614C)
 
-STAGES = {"prepared": "Forms prepared – waiting for signatures", "ready": "Signed – ready to post",
+STAGES = {"kyc_sent": "KYC link sent – waiting for the client", "kyc_received": "KYC received – review and create the W-7",
+          "prepared": "Forms prepared – waiting for signatures", "ready": "Signed – ready to post",
           "posted": "Posted – waiting for the IRS", "suspended": "Suspended – IRS asked for more",
           "itin": "ITIN issued", "rejected": "Rejected", "withdrawn": "Withdrawn / cancelled"}
 CLOSED = {"itin", "rejected", "withdrawn"}
@@ -512,6 +514,20 @@ def track_info(meta: dict, today: dt.date | None = None) -> dict:
     signed = bool(t.get("consent") and t.get("applicant_signed") and t.get("rp_signed"))
     posted = _d(t.get("posted_date")) if t.get("label_done") else None
     out = t.get("outcome") or ""
+    st = meta.get("status") or ""
+    if st in ("kyc_sent", "kyc_received") and out != "withdrawn":
+        k = meta.get("kyc") or {}
+        info = {"stage": st, "stage_label": STAGES[st], "signed": False, "posted": None, "expected": None, "days": None,
+                "overdue": False, "alert": "", "closed": False}
+        if st == "kyc_received":
+            info["alert"] = "Client has submitted the KYC – review it and create the W-7."
+        else:
+            exp, made = _d(k.get("expires")), _d((k.get("created") or "")[:10])
+            if exp and exp < today:
+                info["alert"] = "KYC link has expired – extend it and remind the client."
+            elif made and (today - made).days >= 7:
+                info["alert"] = f"Client hasn't completed the KYC after {(today - made).days} days – send a reminder."
+        return info
     if out in ("itin", "rejected", "withdrawn", "suspended"):
         stage = out
     elif posted:
@@ -650,7 +666,7 @@ def itin_home():
                                       ("ein", "EIN"), ("office_code", "office code"), ("agreement_date", "agreement date"))
                    if not caa.get(k)]
     jobs = all_jobs()
-    return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, doc_types=DOC_TYPES, levels=LEVELS, eng=load_engage(), caa=caa,
+    return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, doc_types=DOC_TYPES, levels=LEVELS, eng=load_engage(), kyc_reasons=KYC_REASONS, caa=caa,
                                   caa_missing=caa_missing, missing=missing, log=_load_log()[:40],
                                   open_jobs=[m for m in jobs if not m["_t"]["closed"]],
                                   done_jobs=[m for m in jobs if m["_t"]["closed"]][:40], stages=STAGES,
@@ -691,7 +707,12 @@ def itin_generate():
     caa = load_caa()
     if not caa.get("responsible_party") or not caa.get("ein") or not caa.get("office_code"):
         errs.append("Fill in and save our Acceptance Agent details first (responsible party, EIN, office code).")
-    has = lambda k: any(f and f.filename for f in request.files.getlist(f"doc_{k}"))
+    from_job = request.form.get("from_job") or ""
+    prev_meta = None
+    if from_job:
+        prev_meta = json.loads((_job_dir(from_job) / "job.json").read_text())
+    have = set(uploaded_kinds(prev_meta)) if prev_meta else set()
+    has = lambda k: k in have or any(f and f.filename for f in request.files.getlist(f"doc_{k}"))
     if a["id_type"] == "passport" and not has("passport"):
         errs.append("Upload the passport (Documents, step 1).")
     if a["id_type"] != "passport" and sum(has(k) for k in ("national_id", "birth_cert", "other_id", "visa")) < 2:
@@ -699,20 +720,28 @@ def itin_generate():
     if errs:
         for e in errs:
             flash("⚠ " + e)
-        return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, doc_types=DOC_TYPES, levels=LEVELS, eng=load_engage(), caa=caa, caa_missing=[],
-                                      missing=[], log=_load_log()[:40], prefill=a,
+        return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, doc_types=DOC_TYPES, levels=LEVELS, eng=load_engage(), kyc_reasons=KYC_REASONS, caa=caa, caa_missing=[],
+                                      missing=[], log=_load_log()[:40], prefill=a, from_job=from_job,
+                                      existing=uploaded_kinds(prev_meta) if prev_meta else {}, review=prev_meta,
                                       has_ai=bool(_cfg().get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")))
-    job = uuid.uuid4().hex[:12]
+    job = from_job or uuid.uuid4().hex[:12]
     d = OUT / job
     d.mkdir(parents=True, exist_ok=True)
     tag = _safe(f"{a['last']}_{a['first']}")
     files = []
+    if prev_meta:
+        for x in prev_meta.get("files", []):
+            if x.get("kind"):
+                files.append(x)                      # documents the client uploaded stay with the application
+            else:
+                (d / x["file"]).unlink(missing_ok=True)   # old W-7 / COA are recreated below
     try:
         (d / f"W-7_{tag}.pdf").write_bytes(fill_irs(TPL_DIR / "fw7.pdf", w7_values(a, caa), overlays=w7_overlays(a)))
         files.append({"file": f"W-7_{tag}.pdf", "label": "Form W-7 – Application for ITIN"})
         (d / f"W-7-COA_{tag}.pdf").write_bytes(fill_irs(TPL_DIR / "fw7coa.pdf", coa_values(a, caa), keep_pages=1))
         files.append({"file": f"W-7-COA_{tag}.pdf", "label": "Form W-7-COA – Certificate of Accuracy"})
         save_docs(d, tag, files, lambda k: request.files.getlist(f"doc_{k}"))
+        files.sort(key=lambda x: 1 if x.get("kind") else 0)    # W-7 and COA first, then the documents
     except Exception as ex:
         flash(f"⚠ Could not create the forms: {ex}")
         return redirect("/itin")
@@ -720,9 +749,25 @@ def itin_generate():
     meta = {"job": job, "when": dt.datetime.now().isoformat(timespec="seconds"), "applicant": name, "a": a,
             "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin"), "files": files,
             "caa": {k: caa.get(k, "") for k in ("company", "responsible_party", "office_code")}}
+    if prev_meta:   # keep the KYC, engagement and tracker history of a client-submitted application
+        for k in ("kyc", "engage", "track", "history"):
+            if prev_meta.get(k):
+                meta[k] = prev_meta[k]
+        meta["when"] = prev_meta.get("when", meta["when"])
+        meta.setdefault("history", []).append({"when": dt.datetime.now().isoformat(timespec="seconds"), "stage": "prepared",
+                                               "staff": meta["staff"]})
     (d / "job.json").write_text(json.dumps(meta, indent=1))
-    _append_log({"job": job, "when": meta["when"], "applicant": name, "reasons": a["reasons"], "app_type": a["app_type"],
-                 "client_ref": a["client_ref"], "staff": meta["staff"], "nfiles": len(files)})
+    if not prev_meta:
+        _append_log({"job": job, "when": meta["when"], "applicant": name, "reasons": a["reasons"], "app_type": a["app_type"],
+                     "client_ref": a["client_ref"], "staff": meta["staff"], "nfiles": len(files)})
+    else:
+        with _LOCK:
+            log = _load_log()
+            for x in log:
+                if x["job"] == job:
+                    x.update(applicant=name, reasons=a["reasons"], app_type=a["app_type"], nfiles=len(files))
+            LOG_FILE.write_text(json.dumps(log, indent=1))
+    _ALERT_CACHE["at"] = 0
     return redirect(f"/itin/job/{job}")
 
 
@@ -853,8 +898,9 @@ def itin_zip(job):
                      download_name=f"ITIN_{_safe(meta['applicant'])}.zip")
 
 
-def register(app, cfg_fn=None):
+def register(app, cfg_fn=None, send_fn=None):
     _CFG["fn"] = cfg_fn
+    _SEND["fn"] = send_fn
     OUT.mkdir(parents=True, exist_ok=True)
     app.register_blueprint(bp)
 
@@ -901,6 +947,33 @@ forms are used as published – only the fields are filled. Signatures and signi
 {% if not has_ai %}<div class="warn">No Anthropic API key is set, so passport reading is off – type the details by hand.</div>{% endif %}
 </div>
 
+{% if review %}{% set k = review.kyc or {} %}{% set ai = k.ai or {} %}
+<div class="card" style="border:2px solid #2563eb"><h2 style="margin-top:0">Reviewing the KYC from {{review.applicant}}</h2>
+<p>The client's answers and documents are filled in below. <b>Check every field against the documents</b>, choose the reason box(es), then press <b>Create W-7</b> at the bottom.
+The documents the client uploaded stay with the application – you don't need to upload them again.</p>
+{% if ai.status == 'running' %}<div class="warn">⏳ The AI is still reading the documents – <a href="/itin/review/{{from_job}}">refresh in a minute</a> to see what it filled in.</div>{% endif %}
+{% if ai.filled %}<div class="ok">AI filled: {{ ai.filled|join('; ') }}.</div>{% endif %}
+{% if ai.warnings %}<div class="warn"><b>Check these:</b><ul style="margin:6px 0 0">{% for w in ai.warnings %}<li>{{w}}</li>{% endfor %}</ul></div>{% endif %}
+{% set ans = k.answers or {} %}<p class="muted" style="margin-bottom:0"><b>Client said they need an ITIN because:</b>
+{% for key, txt, box in kyc_reasons if ans.get('reason_' ~ key) %}<br>• {{txt}} → suggested box <b>{{box}}</b>{% endfor %}
+{% if ans.other_reason %}<br>• "{{ans.other_reason}}"{% endif %}
+{% if ans.had_itin == 'yes' %}<br>• Had an ITIN before: {{ans.old_itin or 'number not given'}} – consider <b>Renew</b>.{% endif %}</p>
+<p style="margin-bottom:0"><a class="btn small secondary" href="/itin/job/{{from_job}}">← Back to the application</a></p></div>
+{% else %}
+<div class="card" id="kyc"><h2 style="margin-top:0">📨 New client – send a KYC link</h2>
+<p class="muted" style="margin-top:0">The client gets one link to fill in their details, upload their documents and sign our engagement form on their phone.
+When they submit, the application appears below as <b>"KYC received"</b> with everything filled in by AI – you check it and create the W-7.</p>
+<form method="post" action="/itin/kyc/new"><div class="fgrid">
+<div><label>Client first name</label><input type="text" name="first" required></div>
+<div><label>Client last name</label><input type="text" name="last" required></div>
+<div><label>Client email</label><input type="email" name="email" placeholder="to email the link"></div>
+<div><label>WhatsApp number (optional)</label><input type="text" name="whatsapp" placeholder="+92 300 1234567"></div>
+<div><label>Fee on the engagement form</label><input type="text" name="fee" value="{{eng.default_fee}}" placeholder="e.g. USD 250" required></div>
+<div><label>Our reference (optional)</label><input type="text" name="client_ref"></div></div>
+<label class="tick"><input type="checkbox" name="send_email" value="1" checked> Email the link to the client now</label>
+<button class="btn" type="submit">Create KYC link</button></form></div>
+{% endif %}
+
 <div class="card"><details {% if caa_missing %}open{% endif %}><summary style="cursor:pointer;font-weight:700;font-size:16px">Our Acceptance Agent details (printed on every W-7 and COA)</summary>
 <form method="post" action="/itin/caa"><div class="fgrid" style="margin-top:10px">
  <div><label>Responsible party (COA "The undersigned")</label><input type="text" name="responsible_party" value="{{caa.responsible_party}}"></div>
@@ -913,9 +986,10 @@ forms are used as published – only the fields are filled. Signatures and signi
  <div><label>Agreement approved date (portal → Agreement Summary)</label><input type="date" name="agreement_date" value="{{caa.agreement_date}}"></div>
  <div><label>Phone</label><input type="text" name="phone" value="{{caa.phone}}"></div>
  <div><label>Fax (optional)</label><input type="text" name="fax" value="{{caa.fax}}"></div>
+ <div><label>Email us when a client submits KYC</label><input type="text" name="notify_email" value="{{caa.notify_email}}"></div>
 </div><div style="margin-top:12px"><button class="btn" type="submit">Save Acceptance Agent details</button></div></form></details></div>
 
-<div class="card" id="engagement"><details><summary style="cursor:pointer;font-weight:700;font-size:16px">Client engagement form wording (signed online by clients)</summary>
+{% if not review %}<div class="card" id="engagement"><details><summary style="cursor:pointer;font-weight:700;font-size:16px">Client engagement form wording (signed online by clients)</summary>
 <p class="muted">This is the text clients see and sign from the link on each application. {fee} is replaced by the fee entered for that client. Keep the numbered headings – a blank line separates sections and lines starting with "- " become bullet points.</p>
 <form method="post" action="/itin/engagement-terms">
 <div class="fgrid"><div><label>Title</label><input type="text" name="title" value="{{eng.title}}"></div>
@@ -923,16 +997,18 @@ forms are used as published – only the fields are filled. Signatures and signi
 <label>Terms</label><textarea name="terms" rows="18" style="width:100%;font-size:13px">{{eng.terms}}</textarea>
 <div style="margin-top:10px"><button class="btn" type="submit">Save wording</button></div></form>
 <form method="post" action="/itin/engagement-terms/reset" onsubmit="return confirm('Replace the wording with the standard text?')" style="margin-top:8px"><button class="btn small secondary">Reset to standard text</button></form>
-</details></div>
+</details></div>{% endif %}
 
 <form method="post" action="/itin/generate" enctype="multipart/form-data" id="wf" onsubmit="return beforeSubmit()">
+<input type="hidden" name="from_job" value="{{from_job or ''}}">{% set ex = existing or {} %}
 <div class="card" id="docs"><h2><span class="step">1</span>Documents</h2>
 <p class="hint">Before you start: send the client the <a href="/itin/guide#ask">information request</a>. Upload each document with its own button.
 The <b>Needed?</b> column changes as you tick the reason boxes below. Press <b>Read with AI</b> to fill the form from that document – then check every field.
 Scans: colour, all four corners visible, PDF/JPG/PNG. Documents can also be added later on the application page. <a href="/itin/guide#docs">More</a></p>
-{% if prefill %}<div class="warn">Please choose the files again – browsers clear uploads after a correction.</div>{% endif %}
+{% if prefill and not from_job %}<div class="warn">Please choose the files again – browsers clear uploads after a correction.</div>{% endif %}
 <table class="doctab"><tr><th>Document</th><th style="width:190px">Needed?</th><th style="width:250px">Upload</th><th style="width:120px"></th></tr>
-{% for k, d in doc_types.items() if k != 'signed_w7' %}<tr id="row_{{k}}"><td><b>{{d[0]}}</b><br><span class="muted">{{d[1]}}</span><div id="msg_{{k}}"></div></td>
+{% for k, d in doc_types.items() if k != 'signed_w7' %}<tr id="row_{{k}}" data-has="{{ '1' if ex.get(k) else '' }}"><td><b>{{d[0]}}</b><br><span class="muted">{{d[1]}}</span>
+{% if ex.get(k) %}<div style="color:#166534;font-size:13px;margin-top:4px">✔ Already uploaded: {% for x in ex[k] %}<a href="/itin/job/{{from_job}}/file/{{x.file}}?inline=1" target="_blank">{{x.orig or x.file}}</a>{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}<div id="msg_{{k}}"></div></td>
 <td><span class="lvl" id="lvl_{{k}}"></span><br><span class="muted" style="font-size:12px" id="why_{{k}}"></span></td>
 <td><input type="file" name="doc_{{k}}" id="f_{{k}}" accept="image/*,application/pdf" {% if k in ('exception','other','residency','tax_return') %}multiple{% endif %} onchange="picked('{{k}}')"></td>
 <td>{% if d[2] %}<button type="button" class="btn small" id="ai_{{k}}" onclick="readDoc('{{k}}')" {% if not has_ai %}disabled title="No Anthropic API key set"{% endif %}>Read with AI</button>{% endif %}</td></tr>{% endfor %}
@@ -1039,14 +1115,14 @@ and prints "Never entered the U.S." when there is no entry date. <a href="/itin/
 <td>{{ ti.posted.strftime('%d/%m/%Y') if ti.posted else '—' }}{% if ti.days is not none and not ti.closed %}<br><span class="muted">{{ti.days}} days ago</span>{% endif %}</td>
 <td>{% if x.track and x.track.outcome == 'itin' %}ITIN {{x.track.itin_number}}{% elif ti.expected %}{{ti.expected.strftime('%d/%m/%Y')}}{% else %}—{% endif %}</td>
 <td><a class="btn small secondary" href="/itin/job/{{x.job}}#track">Open</a></td></tr>{% endmacro %}
-<div class="card" id="progress"><h2>Applications in progress ({{open_jobs|length}})</h2>
+{% if not review %}<div class="card" id="progress"><h2>Applications in progress ({{open_jobs|length}})</h2>
 {% if open_jobs %}<table><tr><th>Applicant</th><th>Stage</th><th>Posted to IRS</th><th>IRS decision expected</th><th></th></tr>
 {% for x in open_jobs %}{{ jobrow(x) }}{% endfor %}</table>
 <p class="muted">IRS timing: about 2 months from posting (8 weeks; 11 weeks if posted between 15 Jan and 30 Apr). Rows turn orange when something needs action.</p>
 {% else %}<p class="muted">Nothing in progress.</p>{% endif %}</div>
 {% if done_jobs %}<div class="card"><details><summary style="cursor:pointer;font-weight:700">Completed / closed ({{done_jobs|length}})</summary>
 <table style="margin-top:10px"><tr><th>Applicant</th><th>Outcome</th><th>Posted</th><th>Result</th><th></th></tr>
-{% for x in done_jobs %}{{ jobrow(x) }}{% endfor %}</table></details></div>{% endif %}
+{% for x in done_jobs %}{{ jobrow(x) }}{% endfor %}</table></details></div>{% endif %}{% endif %}
 
 <script>
 function $(id){return document.getElementById(id)}
@@ -1095,7 +1171,7 @@ function paintDocs(){
   var R = docRules();
   for(var k in R){ var el=$('lvl_'+k); if(!el) continue;
     el.className='lvl '+R[k][0]; el.textContent=LEVELS[R[k][0]]; $('why_'+k).textContent=R[k][1];
-    $('row_'+k).style.opacity = (R[k][0]=='na' && !($('f_'+k).files||[]).length) ? 0.5 : 1 }
+    $('row_'+k).style.opacity = (R[k][0]=='na' && !($('f_'+k).files||[]).length && !$('row_'+k).dataset.has) ? 0.5 : 1 }
 }
 function picked(k){
   var c = COAMAP[k];
@@ -1172,7 +1248,7 @@ function beforeSubmit(){
   var p = [];
   if(!document.querySelector('[name^=reason_]:checked')) p.push('Tick at least one reason (a–h).');
   if(!$('first').value.trim() || !$('last').value.trim()) p.push('Enter the applicant\'s first and last name.');
-  if($('id_type').value=='passport' && !$('f_passport').files.length) p.push('Upload the passport (Documents, step 1).');
+  if($('id_type').value=='passport' && !$('f_passport').files.length && !$('row_passport').dataset.has) p.push('Upload the passport (Documents, step 1).');
   if(p.length){ alert(p.join('\n')); return false }
   return true;
 }
@@ -1220,6 +1296,27 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
 our responsible party signs and dates the Acceptance Agent box and the Certificate of Accuracy; attach the copy of the
 identity document and the tax return (or exception documents) as required by the reason boxes ticked.</p></div>
 
+{% set draft = m.status in ('kyc_sent', 'kyc_received') %}{% set k = m.kyc or {} %}
+{% if k.token %}<div class="card" id="kyc"><h2 style="margin-top:0">Client KYC</h2>
+{% if m.status == 'kyc_received' %}{% set ai = k.ai or {} %}
+<div class="okb">✔ The client submitted the KYC on {{k.submitted|ukdate}} and signed the engagement form.</div>
+{% if ai.status == 'running' %}<div class="warn">⏳ AI is reading the documents – refresh in a minute.</div>{% endif %}
+{% if ai.warnings %}<div class="warn"><b>Check these:</b><ul style="margin:6px 0 0">{% for w in ai.warnings %}<li>{{w}}</li>{% endfor %}</ul></div>{% endif %}
+<div class="btnrow"><a class="btn" href="/itin/review/{{m.job}}">Review answers &amp; create the W-7 →</a>
+<form method="post" action="/itin/job/{{m.job}}/kyc/reopen" style="display:inline" onsubmit="return confirm('Let the client edit and submit again?')"><button class="btn secondary">Let the client edit again</button></form></div>
+{% elif m.status == 'kyc_sent' %}{% set link = base_url ~ '/sign/kyc/' ~ k.token %}
+<p>Waiting for <b>{{m.applicant}}</b> to fill in the form. Link created {{k.created|ukdate}}, works until <b>{{k.expires|ukdate}}</b>.{% if k.saved %} The client last saved their progress on {{k.saved|ukdate}}.{% endif %}</p>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="klink" value="{{link}}" readonly style="flex:1 1 320px">
+<button type="button" class="btn small secondary" onclick="navigator.clipboard.writeText(document.getElementById('klink').value).then(function(){document.getElementById('kcp').textContent='Copied'})">Copy</button>
+<a class="btn small secondary" target="_blank" href="https://wa.me/{{ (k.whatsapp or '')|replace('+','')|replace(' ','') }}?text={{ ('Hello ' ~ m.a.first ~ ', please complete your ITIN application with Startitup Global here (about 10 minutes, works on your phone): ' ~ link)|urlencode }}">WhatsApp</a>
+<span class="muted" id="kcp"></span></div>
+<div class="btnrow" style="margin-top:10px"><form method="post" action="/itin/job/{{m.job}}/kyc/email" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+<div><label>Email</label><input type="email" name="email" value="{{k.email}}"></div><button class="btn small">Email the link / reminder</button></form>
+<form method="post" action="/itin/job/{{m.job}}/kyc/extend"><button class="btn small secondary">Extend the link {{30}} days</button></form></div>
+{% else %}<p class="muted" style="margin:0">Created from the client's KYC (submitted {{k.submitted|ukdate}}). <a href="/itin/review/{{m.job}}">Edit the W-7 again</a></p>{% endif %}
+</div>{% endif %}
+
+{% if not draft %}
 {% set order = ['prepared','ready','posted','itin'] %}{% set cur = order.index(ti.stage) if ti.stage in order else (2 if ti.stage == 'suspended' else 3) %}
 <div class="card" id="track"><h2>Progress tracker <a class="btn small secondary" href="/itin/guide" style="float:right">📘 Staff guide</a></h2>
 {% if ptin_msg %}<div class="bad">⏰ <b>PTIN renewal:</b> {{ptin_msg}}</div>{% endif %}
@@ -1294,6 +1391,7 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 {% if m.history %}<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">History</summary><ul>{% for h in m.history %}<li>{{h.when|ukdate}} – {{stages.get(h.stage, h.stage)}} ({{h.staff}})</li>{% endfor %}</ul></details>{% endif %}
 </div>
 
+{% endif %}
 <div class="card" id="docs"><h2>Documents <a class="btn small secondary" href="/itin/guide#docs" style="float:right">guide</a></h2>
 <table><tr><th>Document</th><th style="width:200px">Needed?</th><th>Uploaded</th></tr>
 {% for k, d in doc_types.items() %}{% set lv = rules[k][0] %}{% if lv != 'na' or up.get(k) %}
@@ -1378,8 +1476,9 @@ If a case does not fit this guide, ask {{caa.responsible_party or 'the responsib
 
 <div class="card g" id="flow"><h2>1. The whole process</h2>
 <table><tr><th style="width:40px">#</th><th>Step</th><th>Who</th><th>In the system</th></tr>
-<tr><td>1</td><td>Send the client the information request (section 2) and agree the fee. After creating the application, send the client the <b>engagement form signing link</b> (Progress tracker → Client engagement form) – they sign online.</td><td>Staff</td><td>—</td></tr>
-<tr><td>2</td><td>Work out the reason box(es) (section 3) and which documents the IRS needs with the W-7 (tax return, or exception documents).</td><td>Staff</td><td>—</td></tr>
+<tr><td>1</td><td>Agree the fee, then on the ITIN page use <b>New client – send a KYC link</b> (enter name, email, fee). The client fills in their details, uploads their documents and signs our engagement form on their phone. The link works for 30 days and they can save and come back.</td><td>Staff → client</td><td>ITIN → New client</td></tr>
+<tr><td>1b</td><td>When the client submits, you get an email and the application shows <b>KYC received</b> (orange row, red badge). AI has read the documents and filled the fields, and lists anything to check.</td><td>System</td><td>Applications in progress</td></tr>
+<tr><td>2</td><td>Open the application → <b>Review answers &amp; create the W-7</b>. Read the AI warnings. Work out the reason box(es) (section 3) – the client's answers suggest one and which documents the IRS needs with the W-7 (tax return, or exception documents).</td><td>Staff</td><td>—</td></tr>
 <tr><td>3</td><td>Upload each document with its own button (the <b>Needed?</b> column shows what is required for the boxes ticked), press <b>Read with AI</b> on each, check every field, complete the rest, tick the COA documents, press <b>Create</b>. Missing documents can be added later on the application page.</td><td>Staff</td><td>ITIN → new application</td></tr>
 <tr><td>4</td><td>Check the PDFs carefully. Send the W-7 to the client to sign by hand in ink and return the original.</td><td>Staff → client</td><td>Tracker A</td></tr>
 <tr><td>5</td><td>Responsible party verifies the passport, signs the Acceptance Agent box on the W-7 and the Certificate of Accuracy.</td><td>{{caa.responsible_party or 'Responsible party'}}</td><td>Tracker A</td></tr>
@@ -1388,7 +1487,7 @@ If a case does not fit this guide, ask {{caa.responsible_party or 'the responsib
 </div>
 
 <div class="card g" id="ask"><h2>2. What to ask the client</h2>
-<p>Keep it simple – copy this message and send it by WhatsApp or email. Everything else we work out ourselves.</p>
+<p><b>Best:</b> send the client a <b>KYC link</b> from the ITIN page – it asks these questions for you, takes the documents and gets the engagement form signed. Clients who prefer to reply by message: copy this text and send it by WhatsApp or email.</p>
 <button class="btn small secondary" onclick="navigator.clipboard.writeText(document.getElementById('cmsg').innerText).then(function(){document.getElementById('cpd').textContent=' Copied'})">Copy message</button><span id="cpd" class="muted"></span>
 <pre class="msg" id="cmsg">{{msg}}</pre>
 <div class="tip"><b>When the client answers question 4 ("why do you need an ITIN?")</b> use section 3 to choose the box. If the answer is only
@@ -1547,6 +1646,19 @@ DECLARATIONS = [
     "I understand I must still sign the IRS Form W-7 by hand in ink and return the original.",
     "I agree to sign this engagement electronically.",
 ]
+
+
+def _sig_ok(sig: str) -> bool:
+    """True if the drawn signature has real ink in it (not an empty box)."""
+    if not sig.startswith("data:image/png;base64,") or len(sig) > 3_000_000:
+        return False
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(base64.b64decode(sig.split(",", 1)[1]))).convert("RGBA")
+        im.thumbnail((400, 400))
+        return sum(1 for px in im.getdata() if px[3] > 40) >= 40
+    except Exception:
+        return False
 
 
 def load_engage() -> dict:
@@ -1717,7 +1829,7 @@ def sign_submit(token):
         errs.append("Type your full name.")
     if not all(f.get(f"decl_{i}") for i in range(len(DECLARATIONS))):
         errs.append("Tick every declaration.")
-    if not sig.startswith("data:image/png;base64,") or len(sig) < 1500:
+    if not _sig_ok(sig):
         errs.append("Draw your signature in the box.")
     eng = load_engage()
     if errs:
@@ -1831,3 +1943,581 @@ function go(){
 {% endif %}
 <p class="muted" style="text-align:center;margin-top:20px">Startitup Global Inc · 5904 Jessamine Street, Suite 15, Houston, TX 77081 · +1 406-605-9190</p>
 </div></body></html>"""
+
+
+# ----------------------------------------------------------------------------- KYC client portal (one link: details + documents + engagement)
+
+KYC_TOKENS_FILE = OUT / "kyc_tokens.json"
+KYC_DAYS = 30
+_SEND = {"fn": None}
+
+# what the client ticks -> W-7 box we suggest to staff
+KYC_REASONS = [
+    ("tax_return", "I need to file a US tax return (for example for my US company / LLC income, or to claim back US tax)", "b"),
+    ("spouse", "I am married to a US citizen or green-card holder and we file a joint US tax return", "e"),
+    ("dependant", "I am the child or relative (dependant) of a US citizen or resident who claims me on their US tax return", "d"),
+    ("us_resident", "I live in the USA but cannot get a Social Security Number", "c"),
+    ("student", "I am a student, professor or researcher in the USA", "f"),
+    ("visa_family", "I am the husband/wife or child of someone working or studying in the USA on a visa", "g"),
+    ("payer", "A US bank, payer, partnership or company has asked me for an ITIN", "h"),
+    ("property", "I am buying or selling US property, or I have a US mortgage", "h"),
+    ("other", "Something else", "h"),
+]
+# documents the client can upload: key (same as DOC_TYPES) -> client-facing label
+KYC_DOCS = {
+    "passport": "Passport – the photo page (and any US visa page)",
+    "national_id": "National ID card – front and back (only if you have no passport)",
+    "birth_cert": "Birth certificate (only if you have no passport) – or your US visa if you have one",
+    "address": "Proof of address – a utility bill or bank statement from the last 3 months",
+    "visa": "US visa, I-20, I-94 or US entry stamp",
+    "tax_return": "Your US tax return (if it is already prepared)",
+    "exception": "Letter from the US bank / payer / partnership, or the property or mortgage papers",
+    "us_person": "Your US spouse's or parent's Social Security card or ITIN letter",
+    "residency": "Proof the dependant lives in the USA – US school or medical record, US ID or US bank statement",
+    "prev_itin": "Your old ITIN letter from the IRS (if you had an ITIN before)",
+    "other": "Anything else you think we need",
+}
+KYC_FIELDS = ("first", "middle", "last", "dob", "sex", "birth_country", "birth_city", "citizenship", "email", "phone",
+              "home_1", "home_2", "mail_1", "mail_2", "other_reason", "spouse_name", "spouse_tin", "dep_rel", "dep_name",
+              "dep_tin", "school", "school_city", "stay", "had_itin", "old_itin", "been_us", "entry_date", "visa_type",
+              "visa_number", "visa_expiry", "home_tax_id", "us_company", "us_company_state")
+
+
+def blank_a() -> dict:
+    a = {k: "" for k in TEXT_KEYS}
+    a.update(reasons=[], coa_identity=[], coa_foreign=[], app_type="new", prev="no", id_type="passport")
+    return a
+
+
+def _kyc_tokens() -> dict:
+    try:
+        return json.loads(KYC_TOKENS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _kyc_job(token: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", token or ""):
+        abort(404)
+    job = _kyc_tokens().get(token)
+    if not job:
+        abort(404)
+    d = _job_dir(job)
+    return d, json.loads((d / "job.json").read_text())
+
+
+def answers_to_a(ans: dict, a: dict, kinds: set) -> dict:
+    """Turn the client's KYC answers into the W-7 applicant dict (staff check it before creating the W-7)."""
+    g = lambda k: (ans.get(k) or "").strip()
+    a = dict(a)
+    for k in ("first", "middle", "last", "dob", "sex", "birth_country", "birth_city", "citizenship", "phone"):
+        a[k] = g(k) or a.get(k, "")
+    a["mail_1"], a["mail_2"] = (g("mail_1"), g("mail_2")) if ans.get("mail_diff") else (g("home_1"), g("home_2"))
+    a["foreign_1"], a["foreign_2"] = (g("home_1"), g("home_2")) if ans.get("mail_diff") else ("", "")
+    boxes = []
+    for key, _t, box in KYC_REASONS:
+        if ans.get(f"reason_{key}") and box not in boxes:
+            boxes.append(box)
+    a["reasons"] = sorted(boxes)
+    a["us_person_name"] = g("spouse_name") or g("dep_name")
+    a["us_person_tin"] = g("spouse_tin") or g("dep_tin")
+    a["rel_relationship"] = g("dep_rel")
+    a["foreign_tin"] = g("home_tax_id")
+    if g("visa_type") or g("visa_number"):
+        exp = g("visa_expiry")
+        a["visa"] = ", ".join(x for x in (g("visa_type"), g("visa_number"),
+                                          ("exp. " + dt.date.fromisoformat(exp).strftime("%m/%d/%Y")) if _d(exp) else "") if x)
+    a["us_entry"] = g("entry_date") if g("been_us") == "yes" else ""
+    if g("school"):
+        a["college"], a["college_city"], a["stay"] = g("school"), g("school_city"), g("stay")
+    elif g("us_company"):
+        a["college"], a["college_city"], a["stay"] = g("us_company"), g("us_company_state"), g("stay")
+    if g("had_itin") == "yes":
+        a["prev"], a["prev_itin"], a["prev_first"], a["prev_last"] = "yes", g("old_itin"), a["first"], a["last"]
+    a["id_type"] = "other" if ans.get("no_passport") else "passport"
+    if a["id_type"] == "other":
+        a["id_other"] = "National ID card" if "national_id" in kinds else (a.get("id_other") or "")
+    coa_map = {"passport": "passport", "national_id": "national_id", "birth_cert": "birth_cert", "visa": "visa"}
+    a["coa_identity"] = [coa_map[k] for k in coa_map if k in kinds]
+    a["coa_foreign"] = [coa_map[k] for k in coa_map if k in kinds and COA_ROWS[coa_map[k]][2]]
+    a["client_ref"] = a.get("client_ref") or "KYC"
+    return a
+
+
+def kyc_ai(job: str):
+    """Background: read every uploaded document with AI and fill/check the applicant record."""
+    d = OUT / job
+    try:
+        m = json.loads((d / "job.json").read_text())
+    except Exception:
+        return
+    a, warn, filled = dict(m["a"]), [], []
+    order = ["passport", "national_id", "birth_cert", "address", "visa", "prev_itin", "us_person", "tax_return", "exception"]
+    for kind in order:
+        for x in [f for f in m.get("files", []) if f.get("kind") == kind][:1]:
+            ai_kind = DOC_TYPES[kind][2]
+            try:
+                r = scan_passport((d / x["file"]).read_bytes(), x["file"], ai_kind)
+            except Exception as ex:
+                warn.append(f"{DOC_TYPES[kind][0].split(' – ')[0]}: AI could not read it ({ex}). Check it by eye.")
+                continue
+            if ai_kind == "identity" and (kind == "passport" or a.get("id_type") != "passport"):
+                for fld, src in (("first", "first_name"), ("middle", "middle_name"), ("last", "surname")):
+                    v = r.get(src) or ""
+                    if v and a.get(fld) and v.strip().upper() != a[fld].strip().upper():
+                        warn.append(f"Client typed {fld} name \"{a[fld]}\" but the {kind.replace('_', ' ')} says \"{v}\" – "
+                                    f"the document version has been used (the W-7 must match the ID exactly).")
+                    if v:
+                        a[fld] = v
+                for fld, src in (("dob", "date_of_birth"), ("citizenship", "nationality"), ("birth_country", "birth_country"),
+                                 ("birth_city", "birth_city")):
+                    if r.get(src):
+                        if a.get(fld) and fld == "dob" and a[fld] != r[src]:
+                            warn.append(f"Date of birth typed {a[fld]} but the document says {r[src]} – document used.")
+                        a[fld] = r[src]
+                if r.get("sex") in ("M", "F"):
+                    a["sex"] = r["sex"]
+                a["id_number"], a["id_issued_by"], a["id_expiry"] = r.get("document_number", ""), r.get("issuing_country", ""), r.get("expiry_date", "")
+                if kind != "passport":
+                    a["id_type"], a["id_other"] = "other", r.get("document_type") or a.get("id_other") or "National ID card"
+                if _d(r.get("expiry_date")) and _d(r["expiry_date"]) < dt.date.today():
+                    warn.append(f"⚠ The {kind.replace('_', ' ')} EXPIRED on {r['expiry_date']} – ask the client for a current document.")
+                filled.append(f"identity details from the {kind.replace('_', ' ')}")
+            elif ai_kind == "identity":
+                pass
+            elif ai_kind == "address":
+                if not a.get("mail_1") and r.get("address_line1"):
+                    a["mail_1"], a["mail_2"] = r["address_line1"], r.get("address_line2", "")
+                    filled.append("address")
+                elif r.get("address_line1"):
+                    stop = {"HOUSE", "FLAT", "STREET", "ST", "ROAD", "RD", "NO", "BLOCK", "APT", "APARTMENT", "SUITE", "UNIT"}
+                    w1 = set(re.sub(r"\W+", " ", a.get("mail_1", "").upper()).split()) - stop
+                    w2 = set(re.sub(r"\W+", " ", r["address_line1"].upper()).split()) - stop
+                    if w1 and w2 and len(w1 & w2) < max(1, min(len(w1), len(w2)) // 2):
+                        warn.append(f"Proof of address shows \"{r['address_line1']}, {r.get('address_line2', '')}\" – different from the address the client typed. Check which is right.")
+                if r.get("name_on_document") and a.get("last") and a["last"].upper() not in r["name_on_document"].upper():
+                    warn.append(f"Proof of address is in the name of \"{r['name_on_document']}\", not the applicant.")
+            elif ai_kind == "visa":
+                if not a.get("visa") and (r.get("visa_type") or r.get("visa_number")):
+                    a["visa"] = ", ".join(x for x in (r.get("visa_type"), r.get("visa_number"),
+                                                      ("exp. " + _d(r["visa_expiry"]).strftime("%m/%d/%Y")) if _d(r.get("visa_expiry")) else "") if x)
+                    filled.append("visa")
+                if not a.get("us_entry") and _d(r.get("entry_date")):
+                    a["us_entry"] = r["entry_date"]
+                    filled.append("date of entry")
+            elif ai_kind == "prev_itin":
+                if r.get("itin"):
+                    a["prev"], a["prev_itin"] = "yes", a.get("prev_itin") or r["itin"]
+                    a["prev_first"], a["prev_last"] = r.get("first_name") or a.get("prev_first", ""), r.get("last_name") or a.get("prev_last", "")
+                    filled.append("previous ITIN")
+            elif ai_kind == "us_person":
+                a["us_person_name"] = a.get("us_person_name") or r.get("name", "")
+                a["us_person_tin"] = a.get("us_person_tin") or r.get("ssn_or_itin", "")
+            elif ai_kind == "tax_return":
+                names = [str(n).upper() for n in (r.get("names") or [])]
+                if a.get("last") and not any(a["last"].upper() in n for n in names):
+                    warn.append(f"⚠ Name on the tax return ({' / '.join(names) or 'not read'}) does not match the applicant.")
+            elif ai_kind == "exception":
+                if r.get("suggested_exception") and not a.get("reason_h_text"):
+                    a["reason_h_text"] = r["suggested_exception"]
+                    if "h" not in a["reasons"]:
+                        a["reasons"] = sorted(set(a["reasons"]) | {"h"})
+                    filled.append(f"box h → {r['suggested_exception']}")
+                if r.get("is_original_on_letterhead") is False:
+                    warn.append("The exception letter looks like a copy – the IRS needs the original on letterhead.")
+            if r.get("notes"):
+                warn.append(f"AI note ({kind.replace('_', ' ')}): {r['notes']}")
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        m["a"] = a
+        m["applicant"] = " ".join(x for x in (a["first"], a["middle"], a["last"]) if x) or m.get("applicant", "")
+        m.setdefault("kyc", {})["ai"] = {"status": "done", "when": dt.datetime.now().isoformat(timespec="seconds"),
+                                         "warnings": warn, "filled": filled}
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+
+
+def _base_url() -> str:
+    return (request.headers.get("X-Forwarded-Proto") or request.scheme).split(",")[0] + "://" + request.host
+
+
+def _kyc_email_body(first: str, link: str, expires: str) -> str:
+    return (f"Hello {first},\n\nThank you for choosing Startitup Global for your ITIN (US tax number) application.\n\n"
+            f"Please open this secure link, fill in your details, upload your documents and sign our engagement form. "
+            f"It takes about 10 minutes and works on your phone:\n\n{link}\n\n"
+            f"You can save and come back later. The link works until {expires}.\n\n"
+            f"Please have ready: your passport (photo page), your home address, and any US documents you have "
+            f"(US visa, US tax return, old ITIN letter).\n\nThank you,\nStartitup Global\n"
+            f"IRS Certifying Acceptance Agent · +1 406-605-9190")
+
+
+def _send_mail(to: str, subject: str, body: str) -> str:
+    """'' on success, otherwise the error text."""
+    if not _SEND["fn"]:
+        return "email sending is not available"
+    try:
+        _SEND["fn"](_cfg(), to, subject, body, [])
+        return ""
+    except Exception as ex:
+        return str(ex)
+
+
+@bp.post("/itin/kyc/new")
+def itin_kyc_new():
+    f = request.form
+    first, last = (f.get("first") or "").strip(), (f.get("last") or "").strip()
+    email, fee = (f.get("email") or "").strip(), (f.get("fee") or "").strip()
+    if not first or not last:
+        flash("⚠ Enter the client's first and last name.")
+        return redirect("/itin#kyc")
+    if not fee:
+        flash("⚠ Enter the fee for the engagement form (e.g. USD 250).")
+        return redirect("/itin#kyc")
+    if f.get("send_email") and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        flash("⚠ Enter a valid email address, or untick \"Email the link\".")
+        return redirect("/itin#kyc")
+    job, tok = uuid.uuid4().hex[:12], uuid.uuid4().hex
+    d = OUT / job
+    d.mkdir(parents=True, exist_ok=True)
+    a = blank_a()
+    a.update(first=first, last=last, client_ref=(f.get("client_ref") or "").strip())
+    exp = (dt.date.today() + dt.timedelta(days=KYC_DAYS)).isoformat()
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    staff = session.get("user") or os.environ.get("MAILSORT_USER", "admin")
+    m = {"job": job, "when": now, "applicant": f"{first} {last}", "a": a, "status": "kyc_sent", "staff": staff, "files": [],
+         "kyc": {"token": tok, "created": now, "expires": exp, "email": email, "whatsapp": (f.get("whatsapp") or "").strip(),
+                 "answers": {"first": first, "last": last, "email": email}},
+         "engage": {"fee": fee}, "history": [{"when": now, "stage": "kyc_sent", "staff": staff}],
+         "caa": {k: load_caa().get(k, "") for k in ("company", "responsible_party", "office_code")}}
+    with _LOCK:
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+        t = _kyc_tokens()
+        t[tok] = job
+        KYC_TOKENS_FILE.write_text(json.dumps(t, indent=1))
+    _append_log({"job": job, "when": now, "applicant": f"{first} {last}", "reasons": [], "app_type": "new",
+                 "client_ref": a["client_ref"], "staff": staff, "nfiles": 0})
+    link = f"{_base_url()}/sign/kyc/{tok}"
+    if f.get("send_email"):
+        err = _send_mail(email, "Your ITIN application – Startitup Global",
+                         _kyc_email_body(first, link, dt.date.fromisoformat(exp).strftime("%d/%m/%Y")))
+        flash(f"⚠ The link was created but the email could not be sent: {err}. Copy the link and send it yourself." if err
+              else f"KYC link emailed to {email}.")
+    else:
+        flash("KYC link created – copy it or send it by WhatsApp.")
+    _ALERT_CACHE["at"] = 0
+    return redirect(f"/itin/job/{job}")
+
+
+@bp.post("/itin/job/<job>/kyc/<action>")
+def itin_kyc_action(job, action):
+    d = _job_dir(job)
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        k = m.get("kyc") or {}
+        if not k.get("token"):
+            abort(404)
+        if action == "extend":
+            k["expires"] = (dt.date.today() + dt.timedelta(days=KYC_DAYS)).isoformat()
+            msg = f"Link extended to {_d(k['expires']).strftime('%d/%m/%Y')}."
+        elif action == "reopen":
+            k["submitted"] = ""
+            m["status"] = "kyc_sent"
+            k["expires"] = max(k.get("expires", ""), (dt.date.today() + dt.timedelta(days=7)).isoformat())
+            msg = "The client can edit and submit again."
+        elif action == "email":
+            to = (request.form.get("email") or k.get("email") or "").strip()
+            err = _send_mail(to, "Reminder: your ITIN application – Startitup Global",
+                             _kyc_email_body(m["a"].get("first") or "", f"{_base_url()}/sign/kyc/{k['token']}",
+                                             _d(k["expires"]).strftime("%d/%m/%Y")))
+            k["email"] = to
+            msg = f"⚠ Email not sent: {err}" if err else f"Link emailed to {to}."
+        else:
+            abort(404)
+        m["kyc"] = k
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    _ALERT_CACHE["at"] = 0
+    flash(msg)
+    return redirect(f"/itin/job/{job}#kyc")
+
+
+@bp.get("/itin/review/<job>")
+def itin_review(job):
+    d = _job_dir(job)
+    m = json.loads((d / "job.json").read_text())
+    caa = load_caa()
+    return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, doc_types=DOC_TYPES,
+                                  levels=LEVELS, eng=load_engage(), kyc_reasons=KYC_REASONS, caa=caa, caa_missing=[], missing=[], log=[],
+                                  open_jobs=[], done_jobs=[], stages=STAGES, ptin_msg="", prefill=m["a"], from_job=job,
+                                  existing=uploaded_kinds(m), review=m,
+                                  has_ai=bool(_cfg().get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")))
+
+
+# --- client side (no login, /sign/ prefix) ---
+
+def _kyc_render(m, token, err="", saved=False):
+    k = m.get("kyc") or {}
+    eng = load_engage()
+    fee = (m.get("engage") or {}).get("fee", "")
+    return render_template_string(KYC_PAGE, m=m, k=k, ans=k.get("answers") or {}, token=token, err=err, saved=saved,
+                                  reasons=KYC_REASONS, docs=KYC_DOCS, up=uploaded_kinds(m), decl=DECLARATIONS, eng=eng,
+                                  fee=fee, terms=eng["terms"].replace("{fee}", fee or "as agreed with us in writing"),
+                                  expired=bool(_d(k.get("expires")) and _d(k["expires"]) < dt.date.today()))
+
+
+@bp.get("/sign/kyc/<token>")
+def kyc_page(token):
+    d, m = _kyc_job(token)
+    return _kyc_render(m, token, saved=request.args.get("saved") == "1")
+
+
+@bp.post("/sign/kyc/<token>")
+def kyc_submit(token):
+    d, m = _kyc_job(token)
+    k = m.get("kyc") or {}
+    if k.get("submitted"):
+        return redirect(f"/sign/kyc/{token}")
+    if _d(k.get("expires")) and _d(k["expires"]) < dt.date.today():
+        return _kyc_render(m, token)
+    f = request.form
+    ans = {fld: (f.get(fld) or "").strip()[:300] for fld in KYC_FIELDS}
+    for key, _t, _b in KYC_REASONS:
+        ans[f"reason_{key}"] = bool(f.get(f"reason_{key}"))
+    ans["mail_diff"], ans["no_passport"] = bool(f.get("mail_diff")), bool(f.get("no_passport"))
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        tag = _safe(f"{ans['last'] or m['a']['last']}_{ans['first'] or m['a']['first']}")
+        try:
+            save_docs(d, tag, m["files"], lambda key: request.files.getlist(f"doc_{key}") if key in KYC_DOCS else [])
+        except Exception as ex:
+            (d / "job.json").write_text(json.dumps(m, indent=1))
+            return _kyc_render(m, token, err=str(ex))
+        m["kyc"]["answers"] = ans
+        m["kyc"]["saved"] = dt.datetime.now().isoformat(timespec="seconds")
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    if f.get("action") == "save":
+        return redirect(f"/sign/kyc/{token}?saved=1")
+    # --- final submit: check and sign
+    kinds = set(uploaded_kinds(m))
+    errs = []
+    for fld, lbl in (("first", "first name"), ("last", "last name"), ("dob", "date of birth"), ("citizenship", "citizenship"),
+                     ("birth_country", "country of birth"), ("home_1", "home address"), ("home_2", "town / country of your address"),
+                     ("phone", "phone number")):
+        if not ans[fld]:
+            errs.append(f"Please enter your {lbl}.")
+    if ans["mail_diff"] and not (ans["mail_1"] and ans["mail_2"]):
+        errs.append("Please enter your mailing address, or untick \"send my letters to a different address\".")
+    if not any(ans[f"reason_{key}"] for key, _t, _b in KYC_REASONS):
+        errs.append("Please tick why you need an ITIN.")
+    if ans["reason_other"] and not ans["other_reason"]:
+        errs.append("Please tell us briefly why you need an ITIN.")
+    if not ans["no_passport"] and "passport" not in kinds:
+        errs.append("Please upload your passport photo page.")
+    if ans["no_passport"] and len(kinds & {"national_id", "birth_cert", "visa"}) < 2:
+        errs.append("Without a passport please upload two documents, e.g. national ID card and birth certificate.")
+    if (ans["reason_payer"] or ans["reason_property"]) and "exception" not in kinds:
+        errs.append("Please upload the letter from the US bank / payer, or the property / mortgage papers.")
+    if ans["reason_dependant"] and "residency" not in kinds:
+        errs.append("Please upload proof that the dependant lives in the USA.")
+    typed, sig = (f.get("typed_name") or "").strip(), f.get("sig") or ""
+    if len(typed) < 3:
+        errs.append("Please type your full name to sign.")
+    if not all(f.get(f"decl_{i}") for i in range(len(DECLARATIONS))):
+        errs.append("Please tick every declaration.")
+    if not _sig_ok(sig):
+        errs.append("Please draw your signature in the box.")
+    if errs:
+        return _kyc_render(m, token, err=" ".join(errs))
+    now = dt.datetime.now(dt.timezone.utc)
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        m["a"] = answers_to_a(ans, m["a"], kinds)
+        m["applicant"] = " ".join(x for x in (m["a"]["first"], m["a"]["middle"], m["a"]["last"]) if x)
+        signed = {"typed_name": typed, "email": ans["email"], "phone": ans["phone"], "when_utc": now.strftime("%Y-%m-%d %H:%M:%S"),
+                  "when_local": now.strftime("%d/%m/%Y"),
+                  "ip": (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
+                  "ua": request.headers.get("User-Agent", ""), "token": token,
+                  "sig_png": base64.b64decode(sig.split(",", 1)[1])}
+        eng = load_engage()
+        e = m.get("engage") or {}
+        pdf = engagement_pdf(m, eng, e.get("fee", ""), signed)
+        tag = _safe(f"{m['a']['last']}_{m['a']['first']}")
+        fname = f"engagement_{tag}_signed.pdf"
+        (d / fname).write_bytes(pdf)
+        m["files"] = [x for x in m["files"] if x["file"] != fname] + [
+            {"file": fname, "label": "Engagement form (signed online)", "kind": "engagement", "orig": "Signed online"}]
+        e.update({kk: v for kk, v in signed.items() if kk != "sig_png"}, signed=True, file=fname)
+        m["engage"] = e
+        t = m.get("track") or {}
+        t["consent"], t["consent_date"] = True, now.date().isoformat()
+        m["track"] = t
+        m["status"] = "kyc_received"
+        m["kyc"]["submitted"] = dt.datetime.now().isoformat(timespec="seconds")
+        m["kyc"]["ai"] = {"status": "running"}
+        m.setdefault("history", []).append({"when": m["kyc"]["submitted"], "stage": "kyc_received", "staff": "client"})
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    job = m["job"]
+    if _cfg().get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY"):
+        threading.Thread(target=kyc_ai, args=(job,), daemon=True).start()
+    else:
+        with _LOCK:
+            m = json.loads((d / "job.json").read_text())
+            m["kyc"]["ai"] = {"status": "off", "warnings": ["AI reading is off (no Anthropic API key) – check the documents by eye."], "filled": []}
+            (d / "job.json").write_text(json.dumps(m, indent=1))
+    notify = load_caa().get("notify_email")
+    if notify:
+        _send_mail(notify, f"New ITIN KYC submitted – {m['applicant']}",
+                   f"{m['applicant']} has completed the ITIN KYC form and signed the engagement form.\n\n"
+                   f"Review it and create the W-7: {_base_url()}/itin/job/{job}\n")
+    _ALERT_CACHE["at"] = 0
+    return redirect(f"/sign/kyc/{token}")
+
+
+KYC_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ITIN application – Startitup Global</title>
+<style>
+:root{--ink:#111;--muted:#666;--line:#e5e7eb}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f4;color:var(--ink);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:16px}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin:14px 0}
+h1{font-size:22px;margin:0 0 6px}h2{font-size:18px;margin:0 0 4px}.muted{color:var(--muted);font-size:14px}
+label{display:block;font-weight:600;font-size:14px;margin:12px 0 4px}.req:after{content:" *";color:#b91c1c}
+input[type=text],input[type=email],input[type=tel],input[type=date],select{width:100%;padding:11px;border:1px solid #cbd5e1;border-radius:9px;font-size:16px;background:#fff}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}@media(max-width:560px){.row2{grid-template-columns:1fr}}
+label.c{display:flex;gap:10px;align-items:flex-start;font-weight:500;font-size:15px;margin:10px 0;cursor:pointer}label.c input{width:22px;height:22px;flex:0 0 22px;margin-top:1px}
+.radio{display:flex;gap:18px;flex-wrap:wrap}.radio label{display:flex;gap:6px;align-items:center;font-weight:500;margin:6px 0}.radio input{width:20px;height:20px}
+.doc{border:1px solid var(--line);border-radius:10px;padding:12px;margin:10px 0}.doc b{display:block}.doc input[type=file]{margin-top:8px;font-size:14px;width:100%}
+.tag{display:inline-block;font-size:12px;font-weight:700;border-radius:9px;padding:1px 8px;margin-left:6px}.tag.r{background:#fee2e2;color:#991b1b}.tag.o{background:#e5e7eb;color:#374151}
+.have{color:#166534;font-size:14px;margin-top:4px}.sub{margin-left:32px;border-left:3px solid #e5e7eb;padding-left:12px}.hide{display:none}
+.terms{white-space:pre-wrap;font-size:14px;max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:14px;background:#fafafa}
+canvas{width:100%;height:170px;border:2px dashed #94a3b8;border-radius:10px;background:#fff;touch-action:none}
+.btn{display:inline-block;background:#111;color:#fff;border:0;border-radius:10px;padding:13px 20px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none}
+.btn.sec{background:#e5e7eb;color:#111}.err{background:#fee2e2;color:#991b1b;border-radius:10px;padding:12px;margin:10px 0}.ok{background:#dcfce7;color:#14532d;border-radius:10px;padding:14px}
+.step{display:inline-flex;width:26px;height:26px;border-radius:50%;background:#111;color:#fff;font-size:14px;align-items:center;justify-content:center;margin-right:8px}
+.brand{font-weight:800;font-size:18px}
+</style></head><body><div class="wrap">
+<div class="brand">Startitup Global</div><div class="muted">IRS Certifying Acceptance Agent · Houston, Texas</div>
+{% if k.submitted %}
+<div class="card"><h1>Thank you{% if ans.first %}, {{ans.first}}{% endif %}</h1>
+<div class="ok">✔ We have received your details, documents and signed engagement form ({{k.submitted|ukdate}}).</div>
+<p><b>What happens next:</b></p><ol><li>We check everything and prepare your Form W-7.</li><li>We send you the W-7 to <b>sign by hand with a pen</b> – please sign, date and return the original to us.</li>
+<li>We send your application to the IRS. The IRS usually replies in about 2 months, by post to your address.</li></ol>
+{% if (m.engage or {}).signed %}<p><a class="btn sec" href="/sign/kyc/{{token}}/copy.pdf">Download your signed engagement form</a></p>{% endif %}
+<p class="muted">Questions? Reply to our message or call +1 406-605-9190.</p></div>
+{% elif expired %}
+<div class="card"><h1>This link has expired</h1><p>Please contact us and we will send you a new link. +1 406-605-9190</p></div>
+{% else %}
+<div class="card"><h1>Your ITIN application</h1>
+<p class="muted" style="margin:0">About 10 minutes. Fields marked <span style="color:#b91c1c">*</span> are needed. You can press <b>Save and finish later</b> at any time and come back to this link{% if k.expires %} until {{k.expires|ukdate}}{% endif %}.</p>
+{% if saved %}<div class="ok" style="margin-top:10px">✔ Saved. You can close this page and come back to the same link later.</div>{% endif %}
+{% if err %}<div class="err">{{err}}</div>{% endif %}</div>
+
+<form method="post" enctype="multipart/form-data" id="kf" onsubmit="return go()">
+<input type="hidden" name="action" id="action" value="submit">
+
+<div class="card"><h2><span class="step">1</span>About you</h2><p class="muted" style="margin:0">Write your name exactly as it is in your passport.</p>
+<div class="row2"><div><label class="req">First name</label><input type="text" name="first" value="{{ans.first}}" autocomplete="given-name"></div>
+<div><label>Middle name</label><input type="text" name="middle" value="{{ans.middle}}"></div></div>
+<label class="req">Last name (surname)</label><input type="text" name="last" value="{{ans.last}}" autocomplete="family-name">
+<div class="row2"><div><label class="req">Date of birth</label><input type="date" name="dob" value="{{ans.dob}}"></div>
+<div><label>Sex (as in your passport)</label><div class="radio"><label><input type="radio" name="sex" value="M" {% if ans.sex=='M' %}checked{% endif %}> Male</label><label><input type="radio" name="sex" value="F" {% if ans.sex=='F' %}checked{% endif %}> Female</label></div></div></div>
+<div class="row2"><div><label class="req">Country of birth</label><input type="text" name="birth_country" value="{{ans.birth_country}}"></div>
+<div><label>City of birth</label><input type="text" name="birth_city" value="{{ans.birth_city}}"></div></div>
+<label class="req">Citizenship (country)</label><input type="text" name="citizenship" value="{{ans.citizenship}}">
+<div class="row2"><div><label class="req">Mobile number (with country code)</label><input type="tel" name="phone" value="{{ans.phone}}" placeholder="+92 300 1234567" autocomplete="tel"></div>
+<div><label>Email</label><input type="email" name="email" value="{{ans.email}}" autocomplete="email"></div></div></div>
+
+<div class="card"><h2><span class="step">2</span>Your home address</h2><p class="muted" style="margin:0">Where you normally live. The IRS posts your ITIN letter here.</p>
+<label class="req">House / flat number and street</label><input type="text" name="home_1" value="{{ans.home_1}}" autocomplete="address-line1">
+<label class="req">Town / city, state or province, postcode and country</label><input type="text" name="home_2" value="{{ans.home_2}}" placeholder="Karachi, Sindh 75600, Pakistan">
+<label class="c"><input type="checkbox" name="mail_diff" value="1" id="mail_diff" {% if ans.mail_diff %}checked{% endif %}> Send my IRS letters to a different address</label>
+<div id="x_mail" class="sub hide"><label>Street address</label><input type="text" name="mail_1" value="{{ans.mail_1}}">
+<label>Town / city, state or province, postcode and country</label><input type="text" name="mail_2" value="{{ans.mail_2}}">
+<p class="muted">Use your own address – not a company "care of" address or a private mailbox.</p></div></div>
+
+<div class="card"><h2><span class="step">3</span>Why do you need an ITIN?</h2><p class="muted" style="margin:0">Tick all that apply. Not sure? Tick "Something else" and explain – we'll work it out.</p>
+{% for key, txt, box in reasons %}<label class="c"><input type="checkbox" name="reason_{{key}}" value="1" id="r_{{key}}" {% if ans.get('reason_'~key) %}checked{% endif %}> {{txt}}</label>
+{% if key == 'spouse' %}<div id="x_spouse" class="sub hide"><div class="row2"><div><label>Your US spouse's full name</label><input type="text" name="spouse_name" value="{{ans.spouse_name}}"></div>
+<div><label>Their SSN or ITIN</label><input type="text" name="spouse_tin" value="{{ans.spouse_tin}}" placeholder="123-45-6789"></div></div></div>{% endif %}
+{% if key == 'dependant' %}<div id="x_dependant" class="sub hide"><label>Your relationship to them (e.g. son, daughter, parent)</label><input type="text" name="dep_rel" value="{{ans.dep_rel}}">
+<div class="row2"><div><label>Their full name</label><input type="text" name="dep_name" value="{{ans.dep_name}}"></div><div><label>Their SSN or ITIN</label><input type="text" name="dep_tin" value="{{ans.dep_tin}}"></div></div></div>{% endif %}
+{% if key == 'student' %}<div id="x_student" class="sub hide"><label>College / university</label><input type="text" name="school" value="{{ans.school}}">
+<div class="row2"><div><label>City and state</label><input type="text" name="school_city" value="{{ans.school_city}}"></div><div><label>How long you will stay</label><input type="text" name="stay" value="{{ans.stay}}" placeholder="e.g. 2 years"></div></div></div>{% endif %}
+{% if key == 'other' %}<div id="x_other" class="sub hide"><label>Please explain briefly</label><input type="text" name="other_reason" value="{{ans.other_reason}}"></div>{% endif %}
+{% endfor %}</div>
+
+<div class="card"><h2><span class="step">4</span>A few more questions</h2>
+<label>Have you ever had an ITIN or any US tax number before?</label>
+<div class="radio">{% for v, l in [('no','No'),('yes','Yes'),('unsure',"I don't know")] %}<label><input type="radio" name="had_itin" value="{{v}}" {% if (ans.had_itin or 'no')==v %}checked{% endif %}> {{l}}</label>{% endfor %}</div>
+<div id="x_itin" class="sub hide"><label>Your old ITIN (if you know it)</label><input type="text" name="old_itin" value="{{ans.old_itin}}" placeholder="9XX-XX-XXXX"></div>
+<label>Have you ever been to the USA?</label>
+<div class="radio">{% for v, l in [('no','No'),('yes','Yes')] %}<label><input type="radio" name="been_us" value="{{v}}" {% if (ans.been_us or 'no')==v %}checked{% endif %}> {{l}}</label>{% endfor %}</div>
+<div id="x_us" class="sub hide"><label>Date you last entered the USA</label><input type="date" name="entry_date" value="{{ans.entry_date}}">
+<div class="row2"><div><label>US visa type (e.g. B1/B2)</label><input type="text" name="visa_type" value="{{ans.visa_type}}"></div><div><label>Visa number</label><input type="text" name="visa_number" value="{{ans.visa_number}}"></div></div>
+<label>Visa expiry date</label><input type="date" name="visa_expiry" value="{{ans.visa_expiry}}"></div>
+<label>Your tax number in your own country (if you have one)</label><input type="text" name="home_tax_id" value="{{ans.home_tax_id}}" placeholder="e.g. NTN in Pakistan, UTR in the UK">
+<div class="row2"><div><label>Your US company name (if any)</label><input type="text" name="us_company" value="{{ans.us_company}}"></div>
+<div><label>State it is registered in</label><input type="text" name="us_company_state" value="{{ans.us_company_state}}" placeholder="e.g. Wyoming"></div></div></div>
+
+<div class="card"><h2><span class="step">5</span>Upload your documents</h2>
+<p class="muted" style="margin:0">Take clear colour photos with all four corners showing, or upload PDFs. Only the documents for your answers are shown.</p>
+<label class="c"><input type="checkbox" name="no_passport" value="1" id="no_passport" {% if ans.no_passport %}checked{% endif %}> I don't have a valid passport</label>
+{% for key, lbl in docs.items() %}<div class="doc" id="d_{{key}}"><b>{{lbl}}<span class="tag" id="t_{{key}}"></span></b>
+{% if up.get(key) %}<div class="have">✔ Already uploaded: {% for x in up[key] %}{{x.orig}}{% if not loop.last %}, {% endif %}{% endfor %} – add more only if needed</div>{% endif %}
+<input type="file" name="doc_{{key}}" accept="image/*,application/pdf" {% if key in ('other','exception','residency','tax_return','national_id') %}multiple{% endif %}></div>{% endfor %}
+</div>
+
+<div class="card"><h2><span class="step">6</span>Our engagement form – read and sign</h2>
+<p class="muted" style="margin:0">Fee: <b>{{fee}}</b>. This is our agreement with you. You will sign the IRS Form W-7 separately, by hand, later.</p>
+<div class="terms" style="margin-top:10px">{{terms}}</div>
+{% for x in decl %}<label class="c"><input type="checkbox" name="decl_{{loop.index0}}" value="1"> {{x}}</label>{% endfor %}
+<label class="req">Type your full name</label><input type="text" name="typed_name" autocomplete="name">
+<label class="req">Draw your signature with your finger or mouse</label><canvas id="pad"></canvas>
+<div style="margin-top:8px"><button type="button" class="btn sec" onclick="clr()">Clear signature</button></div>
+<input type="hidden" name="sig" id="sig">
+<p class="muted">By pressing "Submit" you sign electronically. The date and time, your IP address and device are recorded.</p>
+<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit" onclick="document.getElementById('action').value='submit'">Submit</button>
+<button class="btn sec" type="submit" onclick="document.getElementById('action').value='save'">Save and finish later</button></div></div>
+</form>
+<script>
+function $(i){return document.getElementById(i)} function on(i){return $(i)&&$(i).checked}
+function val(n){var e=document.querySelector('[name='+n+']:checked'); return e?e.value:''}
+function show(){
+  $('x_mail').classList.toggle('hide', !on('mail_diff'));
+  ['spouse','dependant','student','other'].forEach(function(k){ $('x_'+k).classList.toggle('hide', !on('r_'+k)) });
+  $('x_itin').classList.toggle('hide', val('had_itin')!='yes'); $('x_us').classList.toggle('hide', val('been_us')!='yes');
+  var np=on('no_passport'), need={
+    passport:[!np, !np], national_id:[np, np], birth_cert:[np, np], address:[true,false],
+    visa:[val('been_us')=='yes'||on('r_student')||on('r_visa_family'), on('r_student')||on('r_visa_family')],
+    tax_return:[on('r_tax_return')||on('r_spouse')||on('r_dependant'), false],
+    exception:[on('r_payer')||on('r_property'), on('r_payer')||on('r_property')],
+    us_person:[on('r_spouse')||on('r_dependant'), false], residency:[on('r_dependant'), on('r_dependant')],
+    prev_itin:[val('had_itin')=='yes', false], other:[true,false]};
+  for(var k in need){ var d=$('d_'+k); if(!d) continue; var has=d.querySelector('.have');
+    d.classList.toggle('hide', !need[k][0] && !has); var t=$('t_'+k); t.className='tag '+(need[k][1]?'r':'o'); t.textContent=need[k][1]?'Needed':'Optional' }
+}
+document.getElementById('kf').addEventListener('change', show); show();
+var c=$('pad'), x=c.getContext('2d'), drawing=false, drawn=0;
+function size(){ var r=c.getBoundingClientRect(), d=window.devicePixelRatio||1; c.width=r.width*d; c.height=r.height*d; x.scale(d,d); x.lineWidth=2.4; x.lineCap='round'; x.lineJoin='round'; x.strokeStyle='#0b1f66' }
+size();
+function pt(e){ var r=c.getBoundingClientRect(), t=e.touches?e.touches[0]:e; return [t.clientX-r.left, t.clientY-r.top] }
+function down(e){ e.preventDefault(); drawing=true; var p=pt(e); x.beginPath(); x.moveTo(p[0],p[1]) }
+function move(e){ if(!drawing) return; e.preventDefault(); var p=pt(e); x.lineTo(p[0],p[1]); x.stroke(); drawn++ }
+function up(){ drawing=false }
+c.addEventListener('mousedown',down); c.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
+c.addEventListener('touchstart',down,{passive:false}); c.addEventListener('touchmove',move,{passive:false}); c.addEventListener('touchend',up);
+function clr(){ x.clearRect(0,0,c.width,c.height); drawn=0 }
+function go(){
+  if($('action').value=='save') return true;
+  if(drawn < 8){ alert('Please draw your signature in the box (or press "Save and finish later").'); return false }
+  $('sig').value = c.toDataURL('image/png'); return true }
+</script>
+{% endif %}
+<p class="muted" style="text-align:center;margin-top:20px">Startitup Global Inc · 5904 Jessamine Street, Suite 15, Houston, TX 77081 · +1 406-605-9190</p>
+</div></body></html>"""
+
+
+@bp.get("/sign/kyc/<token>/copy.pdf")
+def kyc_copy(token):
+    d, m = _kyc_job(token)
+    e = m.get("engage") or {}
+    if not e.get("signed"):
+        abort(404)
+    return send_file(d / e["file"], mimetype="application/pdf", download_name="ITIN_engagement_signed.pdf")
