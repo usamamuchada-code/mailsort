@@ -1,5 +1,5 @@
 """
-ITIN tab (v32b) – IRS Form W-7 + Form W-7 (COA) Certificate of Accuracy, prepared by Startitup Global Inc as a
+ITIN tab (v35a) – IRS Form W-7 + Form W-7 (COA) Certificate of Accuracy, prepared by Startitup Global Inc as a
 Certifying Acceptance Agent (CAA).
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config).
@@ -119,7 +119,36 @@ Return ONLY a JSON object with these keys:
                                                // the printed place is unambiguous (e.g. "KARACHI, PAK" -> "Pakistan")
  "document_number": "", "issuing_country": "", // issuing country/authority in English
  "issue_date": "YYYY-MM-DD", "expiry_date": "YYYY-MM-DD",
+ "address_line1": "", "address_line2": "",    // only if an address is printed (e.g. national ID card): street;
+                                               // then city, state/province, country, postcode
  "mrz_checked": true | false, "notes": ""}"""
+
+_JSON_RULE = "Read ONLY what is printed. Never guess. Unknown values are \"\". Dates as YYYY-MM-DD. Return ONLY one JSON object.\n"
+SCAN_PROMPTS = {
+    "identity": SCAN_SYSTEM,
+    "address": _JSON_RULE + """This is a proof of address (utility bill, bank statement, tenancy, tax letter). Return:
+{"name_on_document": "", "address_line1": "",   // house/flat number and street (and area)
+ "address_line2": "",                            // city, state/province, country and postcode in one line, country in English
+ "document_type": "", "document_date": "", "notes": ""}""",
+    "visa": _JSON_RULE + """This is a U.S. visa, I-20, I-94 record or passport entry stamp. Return:
+{"name": "", "visa_type": "",        // e.g. B1/B2, F-1, H-1B
+ "visa_number": "",                  // the visa foil number (red number) if shown
+ "visa_expiry": "", "entry_date": "",// most recent date of entry into the United States, if shown
+ "notes": ""}""",
+    "tax_return": _JSON_RULE + """This is a U.S. federal tax return (e.g. Form 1040-NR or 1040). Return:
+{"form": "", "tax_year": "", "names": [""],   // every taxpayer/spouse name as printed on the return
+ "notes": ""}                                   // say if any signature or page seems missing""",
+    "exception": _JSON_RULE + """This document supports an ITIN exception (bank letter, payer/withholding agent letter, partnership or LLC
+agreement, employment letter, mortgage or property sale papers, Form 8288). Return:
+{"document_type": "", "issuer": "", "name_of_applicant": "", "date": "",
+ "suggested_exception": "",   // one of: Exception 1(a), Exception 1(b), Exception 1(c), Exception 1(d), Exception 2(a),
+                              // Exception 2(b), Exception 2(c), Exception 3, Exception 4, Exception 5, T.D. 9363 – or ""
+ "is_original_on_letterhead": true | false, "is_signed": true | false, "notes": ""}""",
+    "us_person": _JSON_RULE + """This is a U.S. social security card, ITIN letter or similar for a U.S. citizen/resident. Return:
+{"name": "", "ssn_or_itin": "", "notes": ""}  // number formatted 123-45-6789""",
+    "prev_itin": _JSON_RULE + """This is an IRS letter assigning an ITIN (e.g. CP565) or showing an existing ITIN. Return:
+{"itin": "", "first_name": "", "middle_name": "", "last_name": "", "letter_date": "", "notes": ""}  // itin as 9XX-XX-XXXX""",
+}
 
 
 def _to_images(data: bytes, filename: str) -> list[tuple[str, bytes]]:
@@ -151,7 +180,7 @@ def _to_images(data: bytes, filename: str) -> list[tuple[str, bytes]]:
     return [(mt, data)]
 
 
-def scan_passport(data: bytes, filename: str) -> dict:
+def scan_passport(data: bytes, filename: str, kind: str = "identity") -> dict:
     cfg = _cfg()
     key = cfg.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
     if not key:
@@ -160,15 +189,16 @@ def scan_passport(data: bytes, filename: str) -> dict:
     client = anthropic.Anthropic(api_key=key)
     content = [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": base64.b64encode(b).decode()}}
                for mt, b in _to_images(data, filename)]
-    content.append({"type": "text", "text": "Read this identity document and return the JSON."})
+    content.append({"type": "text", "text": "Read this document and return the JSON."})
     resp = client.messages.create(model=cfg.get("model") or os.environ.get("MAILSORT_MODEL", "claude-sonnet-4-5"),
-                                  max_tokens=800, system=SCAN_SYSTEM, messages=[{"role": "user", "content": content}])
+                                  max_tokens=900, system=SCAN_PROMPTS.get(kind, SCAN_SYSTEM),
+                                  messages=[{"role": "user", "content": content}])
     raw = resp.content[0].text.strip()
     m = re.search(r"\{.*\}", raw, re.S)
     if not m:
         raise RuntimeError("The AI reply could not be read – type the details by hand.")
     d = json.loads(m.group(0))
-    return {k: (v if isinstance(v, bool) else str(v or "").strip()) for k, v in d.items()}
+    return {k: (v if isinstance(v, (bool, list)) else str(v or "").strip()) for k, v in d.items()}
 
 
 # ----------------------------------------------------------------------------- PDF filling
@@ -234,7 +264,18 @@ def w7_values(a: dict, caa: dict) -> dict:
     if a["prev"] == "yes":
         v.update({"f1_28[0]": itin[0:3], "f1_29[0]": itin[3:5], "f1_30[0]": itin[5:9],
                   "f1_31[0]": irsn[0:3], "f1_32[0]": irsn[3:5], "f1_33[0]": irsn[5:9]})
+    # IRS W-7 instructions: "enter N/A in any section that doesn't apply – don't leave any section blank"
+    if not a["foreign_1"] and not a["foreign_2"]:          # line 3 = home address abroad; usually same as line 2
+        v["f1_15[0]"], v["f1_16[0]"] = a["mail_1"], a["mail_2"]
+    for k in ("f1_21[0]", "f1_22[0]", "f1_37[0]", "f1_38[0]", "f1_39[0]"):     # 6b, 6c, 6g
+        if not (v.get(k) or "").strip():
+            v[k] = "N/A"
     return v
+
+
+def w7_overlays(a: dict) -> list[tuple[str, str]]:
+    """Text written over a field that is too small for it (comb date boxes)."""
+    return [] if a.get("us_entry") else [("f1_27[0]", "Never entered the U.S.")]
 
 
 # W-7-COA supporting documentation rows: key -> (label, row number, has a Foreign Status box)
@@ -271,7 +312,7 @@ def coa_values(a: dict, caa: dict) -> dict:
     return v
 
 
-def fill_irs(template: Path, values: dict, keep_pages: int | None = None) -> bytes:
+def fill_irs(template: Path, values: dict, keep_pages: int | None = None, overlays=None) -> bytes:
     """Fill an IRS form. values are keyed by the END of the full field name (e.g. 'f1_07[0]' or
     'Row1[0].identity[0]'), so the long 'topmostSubform[0].Page1[0]...' prefix does not matter."""
     import pymupdf
@@ -299,6 +340,13 @@ def fill_irs(template: Path, values: dict, keep_pages: int | None = None) -> byt
     missing = set(values) - used
     if missing:
         raise RuntimeError(f"{template.name} has changed – fields not found: {', '.join(sorted(missing)[:8])}")
+    for key, text in overlays or []:
+        for page in doc:
+            for w in page.widgets():
+                if w.field_name.endswith("." + key):
+                    r = w.rect
+                    page.draw_rect(r, color=None, fill=(1, 1, 1), overlay=True)   # cover the printed "/  /"
+                    page.insert_text((r.x0 + 1, r.y1 - 2), text, fontsize=5.5, fontname="helv", color=(0, 0, 0.55))
     buf = io.BytesIO()
     doc.save(buf, garbage=3, deflate=True)
     doc.close()
@@ -320,6 +368,98 @@ def id_copy_pdf(data: bytes, filename: str) -> bytes:
     buf = io.BytesIO()
     pdf.save(buf, deflate=True)
     return buf.getvalue()
+
+
+# ----------------------------------------------------------------------------- supporting documents
+
+# key: (label, what it is / tips, AI reader kind or None, COA row it proves or None)
+DOC_TYPES = {
+    "engagement": ("Our ITIN application / engagement form – signed by the client",
+                   "Client's consent for us to prepare and submit the W-7", None, None),
+    "passport": ("Passport – photo page (plus US visa pages if any)",
+                 "Fills name, date of birth, sex, citizenship, place of birth and passport details", "identity", "passport"),
+    "national_id": ("National ID card (e.g. CNIC) – front and back",
+                    "Second ID when there is no passport; can also fill the home address", "identity", "national_id"),
+    "birth_cert": ("Civil birth certificate", "Needed for children under 18 without a passport", "identity", "birth_cert"),
+    "other_id": ("Other ID – driving licence, voter card, military ID",
+                 "Extra ID when there is no passport (tick the right COA row yourself)", "identity", None),
+    "address": ("Proof of address – utility bill or bank statement (last 3 months)",
+                "Fills line 2 mailing address", "address", None),
+    "visa": ("US visa / I-20 / I-94 / US entry stamp", "Fills 6c visa and the date of entry", "visa", "visa"),
+    "tax_return": ("US federal tax return (e.g. Form 1040-NR) – goes behind the W-7",
+                   "AI checks the names match the passport", "tax_return", None),
+    "exception": ("Exception documents – bank / payer letter, partnership agreement, mortgage or property papers",
+                  "AI suggests which exception (box h) applies", "exception", None),
+    "us_person": ("US spouse / parent – SSN card or ITIN letter", "Fills name and SSN/ITIN for boxes d and e", "us_person", None),
+    "residency": ("Dependant's US residency proof – US school or medical record, US ID, US bank statement",
+                  "Required by the IRS for dependants (box d)", None, None),
+    "prev_itin": ("Old ITIN letter (CP565) – renewals or previous ITIN", "Fills line 6e/6f", "prev_itin", None),
+    "poa": ("Form 2848 power of attorney / court guardianship papers", "Needed when someone signs for the applicant", None, None),
+    "signed_w7": ("Signed W-7 and COA – scan for our records", "Upload after signing", None, None),
+    "other": ("Anything else", "Any other supporting document", None, None),
+}
+LEVELS = {"req": "Required", "cond": "Required for this application", "opt": "Optional", "na": "Not needed"}
+
+
+def doc_rules(a: dict) -> dict:
+    """key -> (level, why). Mirrors docRules() in the page script – keep both in step."""
+    r = set(a.get("reasons") or [])
+    pp = (a.get("id_type") or "passport") == "passport"
+    ret = r & set("bcdefg")
+    out = {
+        "engagement": ("req", "Needed before we post"),
+        "passport": ("req", "Proves identity and foreign status on its own") if pp else ("opt", ""),
+        "national_id": ("opt", "") if pp else ("cond", "No passport – at least two IDs, one with a photo"),
+        "birth_cert": ("cond", "Dependant without a passport") if (not pp and "d" in r) else ("opt", ""),
+        "other_id": ("opt", "" if pp else "Use as the second ID if needed"),
+        "address": ("opt", "Saves typing the address"),
+        "visa": ("cond", "Boxes f and g need the US visa") if r & {"f", "g"} else ("opt", ""),
+        "tax_return": (("na", "Exception claimed in box h instead") if "h" in r else
+                       ("cond", "Boxes b–g need the tax return") if ret else ("opt", "")),
+        "exception": ("cond", "Box h – the IRS needs proof of the exception") if "h" in r else ("na", ""),
+        "us_person": ("opt", "Fills the US person's name and number") if r & {"d", "e"} else ("na", ""),
+        "residency": ("cond", "Box d – dependants must prove US residency") if "d" in r else ("na", ""),
+        "prev_itin": ("opt", "Has / had an ITIN") if (a.get("app_type") == "renew" or a.get("prev") == "yes") else ("na", ""),
+        "poa": ("cond", "Someone else signs for the applicant") if a.get("delegate_rel") in ("poa", "guardian") else ("na", ""),
+        "signed_w7": ("opt", "Upload after signing"),
+        "other": ("opt", ""),
+    }
+    return out
+
+
+def uploaded_kinds(meta: dict) -> dict:
+    out = {}
+    for x in meta.get("files", []):
+        if x.get("kind"):
+            out.setdefault(x["kind"], []).append(x)
+    return out
+
+
+def missing_required(meta: dict) -> list[str]:
+    up = uploaded_kinds(meta)
+    return [DOC_TYPES[k][0] for k, (lvl, _w) in doc_rules(meta["a"]).items() if lvl in ("req", "cond") and k not in up]
+
+
+def save_docs(d: Path, tag: str, files_list: list, getter) -> int:
+    """Save every uploaded document as PDF in the job folder. getter(key) -> list of FileStorage."""
+    n = 0
+    for key, (label, *_rest) in DOC_TYPES.items():
+        for up in getter(key):
+            if not up or not up.filename:
+                continue
+            raw = up.read()
+            if not raw:
+                continue
+            i = 1 + sum(1 for x in files_list if x.get("kind") == key)
+            fname = f"{key}_{tag}_{i}.pdf"
+            try:
+                (d / fname).write_bytes(id_copy_pdf(raw, up.filename))
+            except Exception:
+                raise RuntimeError(f"\"{up.filename}\" could not be read – upload it as a PDF, JPG or PNG.")
+            files_list.append({"file": fname, "label": label.split(" – ")[0] + (f" ({i})" if i > 1 else ""),
+                               "kind": key, "orig": up.filename[:120]})
+            n += 1
+    return n
 
 
 # ----------------------------------------------------------------------------- tracking: sign -> post -> IRS decision
@@ -510,7 +650,7 @@ def itin_home():
                                       ("ein", "EIN"), ("office_code", "office code"), ("agreement_date", "agreement date"))
                    if not caa.get(k)]
     jobs = all_jobs()
-    return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, caa=caa,
+    return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, doc_types=DOC_TYPES, levels=LEVELS, eng=load_engage(), caa=caa,
                                   caa_missing=caa_missing, missing=missing, log=_load_log()[:40],
                                   open_jobs=[m for m in jobs if not m["_t"]["closed"]],
                                   done_jobs=[m for m in jobs if m["_t"]["closed"]][:40], stages=STAGES,
@@ -531,14 +671,16 @@ def itin_caa():
 
 @bp.post("/itin/scan")
 def itin_scan():
-    up = request.files.get("id_file")
+    up = request.files.get("file") or request.files.get("id_file")
+    key = request.form.get("doc") or "passport"
+    kind = (DOC_TYPES.get(key) or (None, None, "identity"))[2] or "identity"
     if not up or not up.filename:
-        return jsonify(ok=False, error="Choose the passport scan first.")
+        return jsonify(ok=False, error="Choose the file first.")
     data = up.read()
     if len(data) > 15_000_000:
         return jsonify(ok=False, error="File is larger than 15 MB – please use a smaller scan.")
     try:
-        return jsonify(ok=True, data=scan_passport(data, up.filename))
+        return jsonify(ok=True, doc=key, kind=kind, data=scan_passport(data, up.filename, kind))
     except Exception as ex:
         return jsonify(ok=False, error=f"Could not read the document: {ex}")
 
@@ -549,10 +691,15 @@ def itin_generate():
     caa = load_caa()
     if not caa.get("responsible_party") or not caa.get("ein") or not caa.get("office_code"):
         errs.append("Fill in and save our Acceptance Agent details first (responsible party, EIN, office code).")
+    has = lambda k: any(f and f.filename for f in request.files.getlist(f"doc_{k}"))
+    if a["id_type"] == "passport" and not has("passport"):
+        errs.append("Upload the passport (Documents, step 1).")
+    if a["id_type"] != "passport" and sum(has(k) for k in ("national_id", "birth_cert", "other_id", "visa")) < 2:
+        errs.append("No passport: upload at least two identity documents (e.g. national ID card + birth certificate).")
     if errs:
         for e in errs:
             flash("⚠ " + e)
-        return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, caa=caa, caa_missing=[],
+        return render_template_string(PAGE, reasons=REASONS, id_types=ID_TYPES, coa_rows=COA_ROWS, doc_types=DOC_TYPES, levels=LEVELS, eng=load_engage(), caa=caa, caa_missing=[],
                                       missing=[], log=_load_log()[:40], prefill=a,
                                       has_ai=bool(_cfg().get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")))
     job = uuid.uuid4().hex[:12]
@@ -561,16 +708,11 @@ def itin_generate():
     tag = _safe(f"{a['last']}_{a['first']}")
     files = []
     try:
-        (d / f"W-7_{tag}.pdf").write_bytes(fill_irs(TPL_DIR / "fw7.pdf", w7_values(a, caa)))
+        (d / f"W-7_{tag}.pdf").write_bytes(fill_irs(TPL_DIR / "fw7.pdf", w7_values(a, caa), overlays=w7_overlays(a)))
         files.append({"file": f"W-7_{tag}.pdf", "label": "Form W-7 – Application for ITIN"})
         (d / f"W-7-COA_{tag}.pdf").write_bytes(fill_irs(TPL_DIR / "fw7coa.pdf", coa_values(a, caa), keep_pages=1))
         files.append({"file": f"W-7-COA_{tag}.pdf", "label": "Form W-7-COA – Certificate of Accuracy"})
-        up = request.files.get("id_file")
-        if up and up.filename:
-            raw = up.read()
-            if raw:
-                (d / f"ID_copy_{tag}.pdf").write_bytes(id_copy_pdf(raw, up.filename))
-                files.append({"file": f"ID_copy_{tag}.pdf", "label": "Copy of identity document (attach to COA)"})
+        save_docs(d, tag, files, lambda k: request.files.getlist(f"doc_{k}"))
     except Exception as ex:
         flash(f"⚠ Could not create the forms: {ex}")
         return redirect("/itin")
@@ -589,8 +731,47 @@ def itin_job(job):
     d = _job_dir(job)
     m = json.loads((d / "job.json").read_text())
     return render_template_string(JOB_PAGE, m=m, t=m.get("track") or {}, ti=track_info(m), reasons=REASONS,
+                                  doc_types=DOC_TYPES, rules=doc_rules(m["a"]), levels=LEVELS, up=uploaded_kinds(m),
+                                  missing_docs=missing_required(m), missing_docs_keys=[], eng=load_engage(),
+                                  base_url=(request.headers.get("X-Forwarded-Proto") or request.scheme).split(",")[0] + "://" + request.host,
                                   addr=IRS_ADDR, outcomes=OUTCOMES, support=support_doc(m["a"]), phone=IRS_STATUS_PHONE,
                                   today=dt.date.today().isoformat(), ptin_msg=ptin_alert(load_caa()), stages=STAGES)
+
+
+@bp.post("/itin/job/<job>/upload")
+def itin_upload(job):
+    d = _job_dir(job)
+    key = request.form.get("doc") or ""
+    if key not in DOC_TYPES:
+        flash("⚠ Choose which document you are uploading.")
+        return redirect(f"/itin/job/{job}#docs")
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        tag = _safe(f"{m['a']['last']}_{m['a']['first']}")
+        try:
+            n = save_docs(d, tag, m["files"], lambda k: request.files.getlist("files") if k == key else [])
+        except Exception as ex:
+            flash(f"⚠ {ex}")
+            return redirect(f"/itin/job/{job}#docs")
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    _ALERT_CACHE["at"] = 0
+    flash(f"{n} file(s) added – {DOC_TYPES[key][0].split(' – ')[0]}." if n else "⚠ No file was chosen.")
+    return redirect(f"/itin/job/{job}#docs")
+
+
+@bp.post("/itin/job/<job>/remove")
+def itin_remove(job):
+    d = _job_dir(job)
+    fname = request.form.get("file") or ""
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        hit = next((x for x in m["files"] if x["file"] == fname and x.get("kind")), None)   # forms can't be removed
+        if hit:
+            m["files"].remove(hit)
+            (d / fname).unlink(missing_ok=True)
+            (d / "job.json").write_text(json.dumps(m, indent=1))
+    flash("Document removed." if hit else "⚠ That file can't be removed.")
+    return redirect(f"/itin/job/{job}#docs")
 
 
 @bp.post("/itin/job/<job>/track")
@@ -621,6 +802,10 @@ def itin_track(job):
             t["label_done"] = False
         if t["label_done"] and not all(t[k] for k in ("enc_w7", "enc_coa", "enc_id", "enc_support")):
             errs.append("Tick every item in the envelope checklist before posting.")
+            t["label_done"], t["posted_date"] = False, ""
+        miss = missing_required(m)
+        if t["label_done"] and miss:
+            errs.append("Posting is blocked – upload the required documents first: " + "; ".join(x.split(" – ")[0] for x in miss) + ".")
             t["label_done"], t["posted_date"] = False, ""
         if t["outcome"] and t["outcome"] != "withdrawn" and not _d(t["posted_date"]):
             errs.append("An IRS outcome can only be recorded after the application has been posted.")
@@ -695,13 +880,18 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
 .step{display:inline-flex;width:24px;height:24px;border-radius:50%;background:#111;color:#fff;font-size:13px;align-items:center;justify-content:center;margin-right:8px}
 .box{background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:8px 0}
 .extra{margin:4px 0 10px 26px}.hide{display:none}
+.doctab td{vertical-align:top}.doctab input[type=file]{font-size:12px;width:100%}
+.lvl{display:inline-block;border-radius:10px;padding:2px 9px;font-size:12px;font-weight:700;white-space:nowrap}
+.lvl.req{background:#fee2e2;color:#991b1b}.lvl.cond{background:#ffedd5;color:#9a3412}.lvl.opt{background:#e5e7eb;color:#374151}.lvl.na{background:#f3f4f6;color:#9ca3af}
+.hint{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;margin:6px 0 10px;font-size:13px;line-height:1.5}
 .ln{display:block;margin-top:16px;font-weight:700;color:#555;font-size:12px}
 .radios label{display:inline-flex;gap:6px;align-items:center;margin-right:18px;font-weight:600;font-size:14px}
 .radios input{width:16px;height:16px}
 table.coa td,table.coa th{text-align:center}table.coa td:first-child,table.coa th:first-child{text-align:left}
 table.coa input{width:16px;height:16px}
 </style>
-<div class="card"><h1>ITIN application (Form W-7)</h1>
+<div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><h1 style="margin:0">ITIN application (Form W-7)</h1>
+<div><a class="btn" href="/itin/guide">📘 Staff guide</a> <a class="btn secondary" href="/itin/guide#ask">What to ask the client</a></div></div>
 <p class="muted">Prepares IRS Form W-7 and the Form W-7-COA Certificate of Accuracy for Startitup Global Inc as a Certifying
 Acceptance Agent. Upload the applicant's passport, let the AI read it, then check and complete the rest. The official IRS
 forms are used as published – only the fields are filled. Signatures and signing dates are left blank to sign by hand.</p>
@@ -725,18 +915,36 @@ forms are used as published – only the fields are filled. Signatures and signi
  <div><label>Fax (optional)</label><input type="text" name="fax" value="{{caa.fax}}"></div>
 </div><div style="margin-top:12px"><button class="btn" type="submit">Save Acceptance Agent details</button></div></form></details></div>
 
+<div class="card" id="engagement"><details><summary style="cursor:pointer;font-weight:700;font-size:16px">Client engagement form wording (signed online by clients)</summary>
+<p class="muted">This is the text clients see and sign from the link on each application. {fee} is replaced by the fee entered for that client. Keep the numbered headings – a blank line separates sections and lines starting with "- " become bullet points.</p>
+<form method="post" action="/itin/engagement-terms">
+<div class="fgrid"><div><label>Title</label><input type="text" name="title" value="{{eng.title}}"></div>
+<div><label>Default fee (pre-filled on each application)</label><input type="text" name="default_fee" value="{{eng.default_fee}}" placeholder="e.g. USD 250"></div></div>
+<label>Terms</label><textarea name="terms" rows="18" style="width:100%;font-size:13px">{{eng.terms}}</textarea>
+<div style="margin-top:10px"><button class="btn" type="submit">Save wording</button></div></form>
+<form method="post" action="/itin/engagement-terms/reset" onsubmit="return confirm('Replace the wording with the standard text?')" style="margin-top:8px"><button class="btn small secondary">Reset to standard text</button></form>
+</details></div>
+
 <form method="post" action="/itin/generate" enctype="multipart/form-data" id="wf" onsubmit="return beforeSubmit()">
-<div class="card"><h2><span class="step">1</span>Identity document</h2>
-<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
- <div style="flex:1 1 280px"><label>Passport scan (photo page – JPG, PNG or PDF)</label><input type="file" name="id_file" id="id_file" accept="image/*,application/pdf"></div>
- <button type="button" class="btn" id="scanbtn" onclick="scan()" {% if not has_ai %}disabled{% endif %}>Read with AI</button>
-</div>
-{% if prefill %}<div class="warn">Please choose the passport scan again – browsers clear the file after a correction.</div>{% endif %}
-<div id="scanmsg"></div>
-<p class="muted" style="margin:6px 0 0">The scan is also saved with the job as "Copy of identity document" to send with the COA.</p>
+<div class="card" id="docs"><h2><span class="step">1</span>Documents</h2>
+<p class="hint">Before you start: send the client the <a href="/itin/guide#ask">information request</a>. Upload each document with its own button.
+The <b>Needed?</b> column changes as you tick the reason boxes below. Press <b>Read with AI</b> to fill the form from that document – then check every field.
+Scans: colour, all four corners visible, PDF/JPG/PNG. Documents can also be added later on the application page. <a href="/itin/guide#docs">More</a></p>
+{% if prefill %}<div class="warn">Please choose the files again – browsers clear uploads after a correction.</div>{% endif %}
+<table class="doctab"><tr><th>Document</th><th style="width:190px">Needed?</th><th style="width:250px">Upload</th><th style="width:120px"></th></tr>
+{% for k, d in doc_types.items() if k != 'signed_w7' %}<tr id="row_{{k}}"><td><b>{{d[0]}}</b><br><span class="muted">{{d[1]}}</span><div id="msg_{{k}}"></div></td>
+<td><span class="lvl" id="lvl_{{k}}"></span><br><span class="muted" style="font-size:12px" id="why_{{k}}"></span></td>
+<td><input type="file" name="doc_{{k}}" id="f_{{k}}" accept="image/*,application/pdf" {% if k in ('exception','other','residency','tax_return') %}multiple{% endif %} onchange="picked('{{k}}')"></td>
+<td>{% if d[2] %}<button type="button" class="btn small" id="ai_{{k}}" onclick="readDoc('{{k}}')" {% if not has_ai %}disabled title="No Anthropic API key set"{% endif %}>Read with AI</button>{% endif %}</td></tr>{% endfor %}
+</table>
+<p class="muted" style="margin:6px 0 0"><span class="lvl req">Required</span> always needed · <span class="lvl cond">Required for this application</span> needed because of the boxes ticked ·
+<span class="lvl opt">Optional</span> helps fill the form · <span class="lvl na">Not needed</span>. Posting to the IRS is blocked until every required document is uploaded.</p>
 </div>
 
 <div class="card"><h2><span class="step">2</span>Application type &amp; reason</h2>
+<p class="hint"><b>Most clients:</b> they live abroad and must file a US tax return (e.g. 1040-NR for their US company) → tick <b>b</b> only and attach the return.
+Spouse of a US person → <b>e</b>. No tax return but a bank/payer letter → <b>h</b> with the exception. "Only for Stripe/PayPal/bank" is not a reason by itself.
+<a href="/itin/guide#reason">Which box for which client</a> · <a href="/itin/guide#exceptions">Exceptions list</a></p>
 <div class="radios"><label><input type="radio" name="app_type" value="new" {% if p.app_type != 'renew' %}checked{% endif %}> Apply for a new ITIN</label>
 <label><input type="radio" name="app_type" value="renew" {% if p.app_type == 'renew' %}checked{% endif %}> Renew an existing ITIN</label></div>
 <p class="muted" style="margin:12px 0 0">Tick every reason that applies to this client.</p>
@@ -757,6 +965,8 @@ forms are used as published – only the fields are filled. Signatures and signi
 </div>
 
 <div class="card"><h2><span class="step">3</span>Applicant</h2>
+<p class="hint">Copy names exactly as on the passport. Leave a field blank if it doesn't apply – the form prints <b>N/A</b> for 6b, 6c and 6g, copies line 2 into line 3 when line 3 is blank,
+and prints "Never entered the U.S." when there is no entry date. <a href="/itin/guide#fields">Field-by-field help</a></p>
 <span class="ln">1a Name</span>
 <div class="fgrid"><div><label>First name</label><input type="text" name="first" id="first" value="{{p.first}}"></div>
 <div><label>Middle name</label><input type="text" name="middle" id="middle" value="{{p.middle}}"></div>
@@ -769,7 +979,7 @@ forms are used as published – only the fields are filled. Signatures and signi
 <span class="ln">2 Mailing address (where the IRS sends the ITIN letter)</span>
 <div class="fgrid"><div><label>Street address, apartment number</label><input type="text" name="mail_1" value="{{p.mail_1}}"></div>
 <div><label>City, state/province, country and postcode</label><input type="text" name="mail_2" value="{{p.mail_2}}"></div></div>
-<span class="ln">3 Foreign (non-U.S.) address – only if different from line 2 (no P.O. box)</span>
+<span class="ln">3 Foreign (non-U.S.) home address – leave blank if the same as line 2 (it is copied). Must be filled if line 2 is a US address. No P.O. box.</span>
 <div class="fgrid"><div><label>Street address, apartment number</label><input type="text" name="foreign_1" value="{{p.foreign_1}}"></div>
 <div><label>City, state/province, country and postcode</label><input type="text" name="foreign_2" value="{{p.foreign_2}}"></div></div>
 
@@ -790,7 +1000,7 @@ forms are used as published – only the fields are filled. Signatures and signi
 <div><label>Issued by (country)</label><input type="text" name="id_issued_by" id="id_issued_by" value="{{p.id_issued_by}}"></div>
 <div><label>Document number</label><input type="text" name="id_number" id="id_number" value="{{p.id_number}}"></div>
 <div><label>Expiry date</label><input type="date" name="id_expiry" id="id_expiry" value="{{p.id_expiry}}"></div>
-<div><label>Date of entry into the U.S. (if any)</label><input type="date" name="us_entry" value="{{p.us_entry}}"></div></div>
+<div><label>Date of entry into the U.S. (blank = never entered)</label><input type="date" name="us_entry" value="{{p.us_entry}}"></div></div>
 
 <span class="ln">6e / 6f Previous ITIN or IRSN</span>
 <div class="radios"><label><input type="radio" name="prev" value="no" onchange="showExtras()" {% if p.prev != 'yes' %}checked{% endif %}> No / Don't know</label>
@@ -815,6 +1025,7 @@ forms are used as published – only the fields are filled. Signatures and signi
 </div>
 
 <div class="card"><h2><span class="step">4</span>Certificate of Accuracy – documents you reviewed</h2>
+<p class="hint">Tick only documents our responsible party has seen as originals or certified copies. For dependants we can only certify a passport or birth certificate. <a href="/itin/guide#docs">More</a></p>
 <p class="muted" style="margin-top:0">A passport alone proves both identity and foreign status. Without a passport, tick two or more documents.</p>
 <table class="coa"><tr><th>Supporting documentation</th><th style="width:90px">Identity</th><th style="width:110px">Foreign status</th></tr>
 {% for k, r in coa_rows.items() %}<tr><td>{{r[0]}}</td><td><input type="checkbox" name="coa_id_{{k}}" id="cid_{{k}}" value="1" {% if k in (p.coa_identity or []) %}checked{% endif %}></td>
@@ -856,38 +1067,117 @@ function syncCoa(){
   showExtras();
 }
 function setv(id, v){ if(v && $(id)) $(id).value = v }
-function scan(){
-  var f = $('id_file').files[0], msg = $('scanmsg');
-  if(!f){ msg.innerHTML = '<div class="bad">Choose the passport scan first.</div>'; return }
-  var fd = new FormData(); fd.append('id_file', f);
-  $('scanbtn').disabled = true; msg.innerHTML = '<p class="muted">Reading the document… (10–20 seconds)</p>';
+var LEVELS = {{ levels|tojson }};
+var COAMAP = {passport:'passport', national_id:'national_id', birth_cert:'birth_cert', visa:'visa'};
+function docRules(){   // mirrors doc_rules() in itinforms.py
+  var r={}; 'abcdefgh'.split('').forEach(function(k){ r[k]=on('r_'+k) });
+  var pp = $('id_type').value=='passport', ret = r.b||r.c||r.d||r.e||r.f||r.g;
+  var at = document.querySelector('[name=app_type]:checked'), renew = at && at.value=='renew';
+  var del = document.querySelector('[name=delegate_rel]').value;
+  return {
+    engagement: ['req','Needed before we post'],
+    passport: pp ? ['req','Proves identity and foreign status on its own'] : ['opt',''],
+    national_id: pp ? ['opt',''] : ['cond','No passport – at least two IDs, one with a photo'],
+    birth_cert: (!pp && r.d) ? ['cond','Dependant without a passport'] : ['opt',''],
+    other_id: ['opt', pp ? '' : 'Use as the second ID if needed'],
+    address: ['opt','Saves typing the address'],
+    visa: (r.f||r.g) ? ['cond','Boxes f and g need the US visa'] : ['opt',''],
+    tax_return: r.h ? ['na','Exception claimed in box h instead'] : (ret ? ['cond','Boxes b–g need the tax return'] : ['opt','']),
+    exception: r.h ? ['cond','Box h – the IRS needs proof of the exception'] : ['na',''],
+    us_person: (r.d||r.e) ? ['opt',"Fills the US person's name and number"] : ['na',''],
+    residency: r.d ? ['cond','Box d – dependants must prove US residency'] : ['na',''],
+    prev_itin: (renew || on('prev_yes')) ? ['opt','Has / had an ITIN'] : ['na',''],
+    poa: (del=='poa'||del=='guardian') ? ['cond','Someone else signs for the applicant'] : ['na',''],
+    other: ['opt','']
+  };
+}
+function paintDocs(){
+  var R = docRules();
+  for(var k in R){ var el=$('lvl_'+k); if(!el) continue;
+    el.className='lvl '+R[k][0]; el.textContent=LEVELS[R[k][0]]; $('why_'+k).textContent=R[k][1];
+    $('row_'+k).style.opacity = (R[k][0]=='na' && !($('f_'+k).files||[]).length) ? 0.5 : 1 }
+}
+function picked(k){
+  var c = COAMAP[k];
+  if(c && $('f_'+k).files.length){ if($('cid_'+c)) $('cid_'+c).checked = true; if($('cfs_'+c)) $('cfs_'+c).checked = true }
+  $('msg_'+k).innerHTML = $('f_'+k).files.length ? '<span class="muted">✔ '+$('f_'+k).files.length+' file(s) chosen'+($('ai_'+k)?' – press Read with AI to fill the form':'')+'</span>' : '';
+  paintDocs();
+}
+function setv(id, v){ if(v && $(id)) $(id).value = v }
+function usd(iso){ return /^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso.slice(5,7)+'/'+iso.slice(8,10)+'/'+iso.slice(0,4) : (iso||'') }
+function readDoc(k){
+  var f = $('f_'+k).files[0], msg = $('msg_'+k);
+  if(!f){ msg.innerHTML = '<div class="bad">Choose the file first.</div>'; return }
+  var fd = new FormData(); fd.append('file', f); fd.append('doc', k);
+  $('ai_'+k).disabled = true; msg.innerHTML = '<p class="muted">Reading… (10–20 seconds)</p>';
   fetch('/itin/scan', {method:'POST', body:fd}).then(function(r){return r.json()}).then(function(r){
-    $('scanbtn').disabled = false;
+    $('ai_'+k).disabled = false;
     if(!r.ok){ msg.innerHTML = '<div class="bad">'+esc(r.error)+'</div>'; return }
-    var d = r.data;
-    setv('first', d.first_name); setv('middle', d.middle_name); setv('last', d.surname);
-    setv('dob', d.date_of_birth); setv('birth_country', d.birth_country); setv('birth_city', d.birth_city);
-    setv('citizenship', d.nationality); setv('id_number', d.document_number); setv('id_issued_by', d.issuing_country);
-    setv('id_expiry', d.expiry_date);
-    if(d.sex=='M'||d.sex=='F') $('sex_'+d.sex).checked = true;
-    if(/passport/i.test(d.document_type||'')){ $('id_type').value = 'passport'; syncCoa() }
-    var w = [];
-    if(d.expiry_date && d.expiry_date < new Date().toISOString().slice(0,10)) w.push('⚠ The document is EXPIRED ('+esc(d.expiry_date)+'). The IRS only accepts current documents.');
-    if(!d.birth_country) w.push('Country of birth is not printed – ask the client and type it in.');
+    var d = r.data, ok = [], w = [];
+    if(r.kind=='identity'){
+      var hasPass = ($('f_passport').files||[]).length > 0;
+      if(k=='passport' || !$('first').value){
+        setv('first', d.first_name); setv('middle', d.middle_name); setv('last', d.surname);
+        setv('dob', d.date_of_birth); setv('birth_country', d.birth_country); setv('birth_city', d.birth_city);
+        setv('citizenship', d.nationality);
+        if(d.sex=='M'||d.sex=='F') $('sex_'+d.sex).checked = true;
+        ok.push('name, date of birth, sex, birth place, citizenship');
+      }
+      if(k=='passport' || (!hasPass && !$('id_number').value)){
+        setv('id_number', d.document_number); setv('id_issued_by', d.issuing_country); setv('id_expiry', d.expiry_date);
+        if(k=='passport'){ $('id_type').value='passport'; syncCoa() }
+        else { $('id_type').value='other'; setv('id_other', d.document_type || 'National ID card'); showExtras() }
+        ok.push('6d document details');
+      }
+      if(d.address_line1 && !document.querySelector('[name=mail_1]').value){
+        document.querySelector('[name=mail_1]').value = d.address_line1; document.querySelector('[name=mail_2]').value = d.address_line2||'';
+        ok.push('line 2 address');
+      }
+      if(d.expiry_date && d.expiry_date < new Date().toISOString().slice(0,10)) w.push('⚠ This document is EXPIRED ('+esc(d.expiry_date)+') – the IRS only accepts current documents.');
+      if(k=='passport' && !d.birth_country) w.push('Country of birth is not printed – ask the client and type it in.');
+    } else if(r.kind=='address'){
+      if(d.address_line1){ document.querySelector('[name=mail_1]').value = d.address_line1; document.querySelector('[name=mail_2]').value = d.address_line2||''; ok.push('line 2 address') }
+      var nm = ($('last').value||'').toUpperCase();
+      if(nm && d.name_on_document && d.name_on_document.toUpperCase().indexOf(nm) < 0) w.push('Name on the document ("'+esc(d.name_on_document)+'") does not match the applicant – check it is the applicant\'s address.');
+    } else if(r.kind=='visa'){
+      var v = [d.visa_type, d.visa_number, d.visa_expiry ? 'exp. '+usd(d.visa_expiry) : ''].filter(Boolean).join(', ');
+      if(v){ document.querySelector('[name=visa]').value = v; ok.push('6c visa') }
+      if(d.entry_date){ document.querySelector('[name=us_entry]').value = d.entry_date; ok.push('date of entry') }
+    } else if(r.kind=='tax_return'){
+      var first=($('first').value||'').toUpperCase(), last=($('last').value||'').toUpperCase(), names=(d.names||[]).map(function(x){return String(x).toUpperCase()});
+      var match = last && names.some(function(n){ return n.indexOf(last)>=0 && (!first || n.indexOf(first)>=0) });
+      ok.push((d.form||'Return')+' '+(d.tax_year||'')+' read');
+      if(!last) w.push('Fill the applicant name first, then read the return again to check the names match.');
+      else if(!match) w.push('⚠ The name on the return ('+esc(names.join(' / '))+') does not match the applicant – the IRS rejects mismatched names.');
+      else ok.push('names match the applicant');
+    } else if(r.kind=='exception'){
+      if(d.suggested_exception){ if(!on('r_h')){ $('r_h').checked = true }
+        var h = document.querySelector('[name=reason_h_text]'); if(!h.value) h.value = d.suggested_exception; showExtras(); ok.push('box h → '+d.suggested_exception+' (check it)') }
+      if(d.is_original_on_letterhead===false) w.push('The IRS needs the ORIGINAL letter on letterhead – a copy is not enough.');
+      if(d.is_signed===false) w.push('The letter does not look signed.');
+    } else if(r.kind=='us_person'){
+      var a=document.querySelector('[name=us_person_name]'), b=document.querySelector('[name=us_person_tin]');
+      if(d.name) a.value=d.name; if(d.ssn_or_itin) b.value=d.ssn_or_itin; ok.push('US person name and number');
+    } else if(r.kind=='prev_itin'){
+      $('prev_yes').checked = true; showExtras();
+      ['prev_itin','prev_first','prev_middle','prev_last'].forEach(function(n, i){ var val=[d.itin,d.first_name,d.middle_name,d.last_name][i]; if(val) document.querySelector('[name='+n+']').value = val });
+      ok.push('6e/6f previous ITIN');
+    }
     if(d.notes) w.push('AI note: '+esc(d.notes));
-    msg.innerHTML = '<div class="ok">Read <b>'+esc([d.first_name,d.middle_name,d.surname].filter(Boolean).join(' '))+'</b> – '
-      + esc(d.document_type||'document')+' '+esc(d.document_number)+(d.mrz_checked?' (checked against the MRZ)':'')+'. Check every field against the scan.</div>'
-      + (w.length ? '<div class="warn">'+w.join('<br>')+'</div>' : '');
-  }).catch(function(e){ $('scanbtn').disabled = false; msg.innerHTML = '<div class="bad">Reading failed: '+esc(e)+'</div>' });
+    msg.innerHTML = '<div class="ok">Filled: '+esc(ok.join('; ')||'nothing new')+'. Check every field against the document.</div>' + (w.length ? '<div class="warn">'+w.join('<br>')+'</div>' : '');
+    paintDocs();
+  }).catch(function(e){ $('ai_'+k).disabled = false; msg.innerHTML = '<div class="bad">Reading failed: '+esc(e)+'</div>' });
 }
 function beforeSubmit(){
   var p = [];
   if(!document.querySelector('[name^=reason_]:checked')) p.push('Tick at least one reason (a–h).');
   if(!$('first').value.trim() || !$('last').value.trim()) p.push('Enter the applicant\'s first and last name.');
+  if($('id_type').value=='passport' && !$('f_passport').files.length) p.push('Upload the passport (Documents, step 1).');
   if(p.length){ alert(p.join('\n')); return false }
   return true;
 }
 {% if not prefill %}syncCoa();{% else %}showExtras();{% endif %}
+$('wf').addEventListener('change', paintDocs); paintDocs();
 </script>
 {% endblock %}"""
 
@@ -913,6 +1203,8 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
 .steps span.done{background:#dcfce7;color:#166534}.steps span.now{background:#111;color:#fff}
 .tsec{border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:12px 0}
 .tsec h3{margin:0 0 4px;font-size:15px}
+.lvl{display:inline-block;border-radius:10px;padding:2px 9px;font-size:12px;font-weight:700;white-space:nowrap}
+.lvl.req{background:#fee2e2;color:#991b1b}.lvl.cond{background:#ffedd5;color:#9a3412}.lvl.opt{background:#e5e7eb;color:#374151}.lvl.na{background:#f3f4f6;color:#9ca3af}
 .addr{font-family:ui-monospace,Menlo,Consolas,monospace;background:#f7f7f7;border:1px dashed #94a3b8;border-radius:8px;padding:10px 14px;line-height:1.5;display:inline-block;margin:6px 0}
 </style>
 <div class="card"><h1>{{m.applicant}} <span class="muted" style="font-size:15px">ITIN – {{ 'renewal' if m.a.app_type == 'renew' else 'new application' }}</span></h1>
@@ -929,16 +1221,37 @@ our responsible party signs and dates the Acceptance Agent box and the Certifica
 identity document and the tax return (or exception documents) as required by the reason boxes ticked.</p></div>
 
 {% set order = ['prepared','ready','posted','itin'] %}{% set cur = order.index(ti.stage) if ti.stage in order else (2 if ti.stage == 'suspended' else 3) %}
-<div class="card" id="track"><h2>Progress tracker</h2>
+<div class="card" id="track"><h2>Progress tracker <a class="btn small secondary" href="/itin/guide" style="float:right">📘 Staff guide</a></h2>
 {% if ptin_msg %}<div class="bad">⏰ <b>PTIN renewal:</b> {{ptin_msg}}</div>{% endif %}
 <div class="steps">{% for k, lbl in [('prepared','1 · Forms prepared'),('ready','2 · Signed'),('posted','3 · Posted to IRS'),('itin','4 · IRS decision')] %}
 <span class="{{ 'now' if loop.index0 == cur else ('done' if loop.index0 < cur else '') }}">{{lbl}}</span>{% endfor %}</div>
 <p style="margin:6px 0"><b>Current stage:</b> {{ti.stage_label}}{% if ti.expected and not ti.closed %} · IRS decision expected by <b>{{ti.expected.strftime('%d/%m/%Y')}}</b> ({{ti.days}} days since posting){% endif %}</p>
 {% if ti.alert %}<div class="warn">⚠ {{ti.alert}}</div>{% endif %}
+{% if missing_docs and not ti.closed %}<div class="bad">📎 <b>Documents still missing</b> (posting is blocked until uploaded): {% for x in missing_docs %}{{ x.split(' – ')[0] }}{% if not loop.last %}; {% endif %}{% endfor %}. <a href="#docs">Upload them</a></div>{% endif %}
 {% if ti.stage == 'itin' %}<div class="okb">✔ ITIN issued: <b>{{t.itin_number}}</b>{% if t.outcome_date %} on {{t.outcome_date|ukdate}}{% endif %}.</div>{% endif %}
 
+{% set e = m.engage or {} %}
+<div class="tsec" style="background:#fafafa"><h3>Client engagement form <a class="muted" style="font-size:13px;font-weight:400" href="/itin/guide#sign">guide</a></h3>
+{% if e.signed %}<div class="okb">✔ Signed online by <b>{{e.typed_name}}</b> on {{e.when_local}} – <a href="/itin/job/{{m.job}}/file/{{e.file}}?inline=1" target="_blank">view signed PDF</a>. Consent in section A has been ticked automatically.</div>
+{% else %}
+<p class="muted" style="margin:2px 0 8px">Send the client a link – they check their details, read our terms, tick the declarations and sign with their finger or mouse.
+The signed PDF is saved here and section A "client consent" ticks itself. (This is our own form, so an electronic signature is fine – unlike the W-7.)</p>
+<form method="post" action="/itin/job/{{m.job}}/engage" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+<div style="flex:0 1 220px"><label>Fee shown on the form</label><input type="text" name="fee" value="{{ e.fee or eng.default_fee }}" placeholder="e.g. USD 250"></div>
+<button class="btn" type="submit">{{ 'Update fee' if e.token else 'Create signing link' }}</button>
+<a class="btn secondary" href="/itin/job/{{m.job}}/engage/blank.pdf" target="_blank">Download to sign on paper</a></form>
+{% if e.token %}{% set link = base_url ~ '/sign/itin/' ~ e.token %}
+<div style="margin-top:10px"><label>Signing link for the client</label>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="slink" value="{{link}}" readonly style="flex:1 1 320px">
+<button type="button" class="btn small secondary" onclick="navigator.clipboard.writeText(document.getElementById('slink').value).then(function(){document.getElementById('scp').textContent='Copied'})">Copy</button>
+<a class="btn small secondary" target="_blank" href="https://wa.me/?text={{ ('Hello ' ~ m.a.first ~ ', please review and sign your ITIN engagement form with Startitup Global here: ' ~ link)|urlencode }}">WhatsApp</a>
+<a class="btn small secondary" href="mailto:?subject={{ 'Your ITIN engagement form – Startitup Global'|urlencode }}&body={{ ('Hello ' ~ m.a.first ~ ',\n\nPlease review and sign your ITIN engagement form here:\n' ~ link ~ '\n\nThank you,\nStartitup Global')|urlencode }}">Email</a>
+<span class="muted" id="scp"></span></div>
+<p class="muted" style="margin:4px 0 0">Link created {{e.created|ukdate}} · fee {{e.fee}} · waiting for the client to sign.</p></div>{% endif %}
+{% endif %}</div>
+
 <form method="post" action="/itin/job/{{m.job}}/track">
-<div class="tsec"><h3>A. Client consent &amp; signatures</h3>
+<div class="tsec"><h3>A. Client consent &amp; signatures <a class="muted" style="font-size:13px;font-weight:400" href="/itin/guide#sign">guide</a></h3>
 <div class="warn" style="margin:6px 0 10px"><b>The W-7 must be signed by hand in ink.</b> Form W-7 is not on the IRS list of forms that accept electronic
 or typed signatures, so a digital signature (or just the name typed in) gets the application suspended or rejected. Post or courier the printed
 W-7 to the client, they sign and date it in ink and send the original back; we post that original to the IRS. Moaz signs the Acceptance
@@ -951,7 +1264,7 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 <div class="sub"><label>Date signed</label><input type="date" name="rp_signed_date" value="{{t.rp_signed_date}}"></div>
 </div>
 
-<div class="tsec"><h3>B. Post to the IRS</h3>
+<div class="tsec"><h3>B. Post to the IRS <a class="muted" style="font-size:13px;font-weight:400" href="/itin/guide#post">guide</a></h3>
 <p class="muted" style="margin:2px 0 8px">The system will not accept posting until all three boxes in section A are ticked.</p>
 <div class="fgrid"><div><label>Sending by</label><select name="post_method" id="pm" onchange="showAddr()">{% for k, v in addr.items() %}<option value="{{k}}" {% if (t.post_method or 'courier') == k %}selected{% endif %}>{{v[0]}}</option>{% endfor %}</select></div></div>
 {% for k, v in addr.items() %}<div class="addr" id="addr_{{k}}" style="display:none">{{ v[1]|join('<br>')|safe }}</div>{% endfor %}
@@ -968,7 +1281,7 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 
 </div>
 
-<div class="tsec"><h3>C. IRS decision</h3>
+<div class="tsec"><h3>C. IRS decision <a class="muted" style="font-size:13px;font-weight:400" href="/itin/guide#after">guide</a></h3>
 <p class="muted" style="margin:2px 0 8px">The IRS takes about 2 months (8 weeks; up to 11 weeks between 15 January and 30 April). Status line for acceptance agents: {{phone}}.</p>
 <div class="fgrid"><div><label>Outcome</label><select name="outcome">{% for k, v in outcomes.items() %}<option value="{{k}}" {% if (t.outcome or '') == k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></div>
 <div><label>Date of IRS letter</label><input type="date" name="outcome_date" value="{{t.outcome_date}}"></div>
@@ -979,6 +1292,22 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 <button class="btn" type="submit">Save progress</button>
 </form>
 {% if m.history %}<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">History</summary><ul>{% for h in m.history %}<li>{{h.when|ukdate}} – {{stages.get(h.stage, h.stage)}} ({{h.staff}})</li>{% endfor %}</ul></details>{% endif %}
+</div>
+
+<div class="card" id="docs"><h2>Documents <a class="btn small secondary" href="/itin/guide#docs" style="float:right">guide</a></h2>
+<table><tr><th>Document</th><th style="width:200px">Needed?</th><th>Uploaded</th></tr>
+{% for k, d in doc_types.items() %}{% set lv = rules[k][0] %}{% if lv != 'na' or up.get(k) %}
+<tr><td><b>{{d[0]}}</b>{% if rules[k][1] %}<br><span class="muted" style="font-size:12px">{{rules[k][1]}}</span>{% endif %}</td>
+<td><span class="lvl {{lv}}">{{levels[lv]}}</span></td>
+<td>{% if up.get(k) %}{% for x in up[k] %}<div>✔ <a href="/itin/job/{{m.job}}/file/{{x.file}}?inline=1" target="_blank">{{x.orig or x.file}}</a>
+<form method="post" action="/itin/job/{{m.job}}/remove" style="display:inline" onsubmit="return confirm('Remove this document?')"><input type="hidden" name="file" value="{{x.file}}"><button class="btn small secondary" style="padding:1px 8px">remove</button></form></div>{% endfor %}
+{% elif lv in ('req','cond') %}<span style="color:#b91c1c;font-weight:600">✖ Missing</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% endif %}{% endfor %}</table>
+<form method="post" action="/itin/job/{{m.job}}/upload" enctype="multipart/form-data" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+<div style="flex:1 1 280px"><label>Add a document</label><select name="doc"><option value="">Choose which document…</option>
+{% for k, d in doc_types.items() %}<option value="{{k}}" {% if k in missing_docs_keys %}style="font-weight:700"{% endif %}>{{d[0].split(' – ')[0]}}{% if rules[k][0] in ('req','cond') and not up.get(k) %} (missing){% endif %}</option>{% endfor %}</select></div>
+<div style="flex:1 1 240px"><label>File(s)</label><input type="file" name="files" multiple accept="image/*,application/pdf"></div>
+<button class="btn" type="submit">Upload</button></form>
+<p class="muted" style="margin-top:8px">Uploaded documents are saved as PDFs with this application, included in the ZIP, and kept as our CAA record.</p>
 </div>
 
 <div class="doclist">
@@ -1000,3 +1329,505 @@ function copyAddr(){ var v=document.getElementById('pm').value, el=document.getE
 showAddr();
 </script>
 {% endblock %}"""
+
+
+# ----------------------------------------------------------------------------- staff guide
+
+CUSTOMER_MESSAGE = """Hello {name},
+
+To apply for your ITIN (US tax number) we need a few things from you. Please reply with:
+
+1. A clear colour photo or scan of your passport photo page (the passport must still be valid). No passport? Send your national ID card (front and back) and birth certificate.
+2. Your home address (house, street, city, postcode, country) - this is where the IRS posts your ITIN letter. A recent utility bill or bank statement showing it helps.
+3. Your mobile number.
+4. Why you need the ITIN - for example: to file a US tax return for your US company, you are the husband/wife of a US person, you receive income from a US payer, or you are buying/selling US property.
+5. Have you ever had an ITIN or any US tax number before? If yes, please send the number.
+6. Your tax number in your own country, if you have one (e.g. NTN in Pakistan, UTR in the UK).
+7. Have you ever been to the USA? If yes, the date you last entered and your visa type.
+8. Your US company name and the state it is registered in (if you have one).
+
+Next steps: we prepare the form, you sign it by hand with a pen (we cannot accept a typed or digital signature) and send the original back to us by courier. We then send everything to the IRS. The IRS usually replies in about 2 months.
+
+Thank you,
+Startitup Global"""
+
+
+@bp.get("/itin/guide")
+def itin_guide():
+    return render_template_string(GUIDE, msg=CUSTOMER_MESSAGE.replace("{name}", "[client name]"), addr=IRS_ADDR,
+                                  phone=IRS_STATUS_PHONE, caa=load_caa())
+
+
+GUIDE = r"""{% extends "base" %}{% block body %}
+<style>
+.g h2{margin-top:6px}.g h3{margin:18px 0 6px;font-size:16px}
+.g table{width:100%;border-collapse:collapse;margin:8px 0}.g td,.g th{border:1px solid var(--line);padding:8px 10px;vertical-align:top;font-size:14px;text-align:left}
+.g th{background:#f3f4f6}.g ol li,.g ul li{margin:4px 0;line-height:1.5}
+.tip{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px;margin:10px 0}
+.stop{background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin:10px 0}
+.toc a{display:inline-block;margin:3px 10px 3px 0}
+pre.msg{white-space:pre-wrap;background:#f7f7f7;border:1px solid var(--line);border-radius:8px;padding:14px;font-family:inherit;font-size:14px}
+</style>
+<div class="card g"><h1>ITIN staff guide</h1>
+<p class="muted">How to handle an ITIN (Form W-7) application from the first message to the ITIN letter. Based on the IRS Instructions for Form W-7 (Rev. December 2024).
+If a case does not fit this guide, ask {{caa.responsible_party or 'the responsible party'}} before sending anything to the client or the IRS.</p>
+<div class="toc"><b>Jump to:</b> <a href="#flow">1. The whole process</a><a href="#ask">2. What to ask the client</a><a href="#reason">3. Which reason box</a>
+<a href="#exceptions">4. Exceptions (box h)</a><a href="#fields">5. Filling each field</a><a href="#docs">6. Documents &amp; COA</a><a href="#sign">7. Signing</a>
+<a href="#post">8. Posting</a><a href="#after">9. After posting</a><a href="#renew">10. Renewals</a><a href="#dont">11. Common mistakes</a></div>
+<p><a class="btn" href="/itin">← Back to ITIN applications</a></p></div>
+
+<div class="card g" id="flow"><h2>1. The whole process</h2>
+<table><tr><th style="width:40px">#</th><th>Step</th><th>Who</th><th>In the system</th></tr>
+<tr><td>1</td><td>Send the client the information request (section 2) and agree the fee. After creating the application, send the client the <b>engagement form signing link</b> (Progress tracker → Client engagement form) – they sign online.</td><td>Staff</td><td>—</td></tr>
+<tr><td>2</td><td>Work out the reason box(es) (section 3) and which documents the IRS needs with the W-7 (tax return, or exception documents).</td><td>Staff</td><td>—</td></tr>
+<tr><td>3</td><td>Upload each document with its own button (the <b>Needed?</b> column shows what is required for the boxes ticked), press <b>Read with AI</b> on each, check every field, complete the rest, tick the COA documents, press <b>Create</b>. Missing documents can be added later on the application page.</td><td>Staff</td><td>ITIN → new application</td></tr>
+<tr><td>4</td><td>Check the PDFs carefully. Send the W-7 to the client to sign by hand in ink and return the original.</td><td>Staff → client</td><td>Tracker A</td></tr>
+<tr><td>5</td><td>Responsible party verifies the passport, signs the Acceptance Agent box on the W-7 and the Certificate of Accuracy.</td><td>{{caa.responsible_party or 'Responsible party'}}</td><td>Tracker A</td></tr>
+<tr><td>6</td><td>Put the envelope together (checklist), generate the postage label, post it, enter carrier, tracking number and date.</td><td>Staff</td><td>Tracker B</td></tr>
+<tr><td>7</td><td>Wait about 2 months. If the row turns orange, call the IRS status line. Record the outcome and the ITIN, tell the client.</td><td>Staff</td><td>Tracker C</td></tr></table>
+</div>
+
+<div class="card g" id="ask"><h2>2. What to ask the client</h2>
+<p>Keep it simple – copy this message and send it by WhatsApp or email. Everything else we work out ourselves.</p>
+<button class="btn small secondary" onclick="navigator.clipboard.writeText(document.getElementById('cmsg').innerText).then(function(){document.getElementById('cpd').textContent=' Copied'})">Copy message</button><span id="cpd" class="muted"></span>
+<pre class="msg" id="cmsg">{{msg}}</pre>
+<div class="tip"><b>When the client answers question 4 ("why do you need an ITIN?")</b> use section 3 to choose the box. If the answer is only
+"for Stripe / PayPal / Amazon / a bank account", that is <b>not</b> a reason on its own – see the red box in section 3.</div>
+</div>
+
+<div class="card g" id="reason"><h2>3. Which reason box to tick</h2>
+<p>Find the client's situation. Tick only the boxes shown. Then attach what the last column says.</p>
+<table><tr><th>Client's situation</th><th>Tick</th><th>Extra fields</th><th>What must go with the W-7</th></tr>
+<tr><td><b>Most common:</b> lives outside the US and has to file a US tax return (e.g. Form 1040-NR for US business income, or to claim a refund of US tax withheld)</td><td><b>b</b></td><td>Line 3 foreign address must be complete</td><td>The completed US tax return. W-7 goes on top, return behind it.</td></tr>
+<tr><td>Husband/wife of a US citizen or US resident, filing a joint US return</td><td><b>e</b></td><td>Name + SSN/ITIN of the US spouse</td><td>The joint tax return</td></tr>
+<tr><td>Child or other dependant of a US citizen/resident</td><td><b>d</b></td><td>Relationship (e.g. "Son"), name + SSN/ITIN of the US person, date of entry into the US</td><td>The tax return + proof the dependant lives in the US. We can only verify a <b>passport or birth certificate</b> for dependants.</td></tr>
+<tr><td>Lives in the US because of days spent there (substantial presence) but can't get an SSN</td><td><b>c</b></td><td>Date of entry into the US</td><td>The tax return</td></tr>
+<tr><td>Spouse/child of someone holding a US visa (e.g. H-1B, L-1)</td><td><b>g</b></td><td>Date of entry into the US</td><td>Tax return + copy of the visa</td></tr>
+<tr><td>Student, professor or researcher in the US</td><td><b>f</b> (+ <b>h</b> if claiming Exception 2)</td><td>Visa (6c), date of entry, line 6g school + city/state + length of stay</td><td>Tax return, or the Exception 2 documents. Passport must show a valid US visa.</td></tr>
+<tr><td>No tax return, but claiming a tax treaty benefit (e.g. reduced withholding on royalties or dividends)</td><td><b>a</b> + <b>h</b></td><td>Treaty country + article number; box h "Exception 1(d)" or "Exception 2(…)"</td><td>The exception documents (section 4)</td></tr>
+<tr><td>No tax return, but a US bank / partnership / payer / mortgage lender / property buyer needs the ITIN</td><td><b>h</b> only</td><td>Exception number on the box h line</td><td>The exception documents (section 4)</td></tr>
+<tr><td>Already had an ITIN that expired</td><td>Tick <b>Renew</b>, the same reason box as above, 6e = <b>Yes</b></td><td>Old ITIN in 6f</td><td>The tax return (renewals are only for people filing a return)</td></tr></table>
+<div class="stop"><b>Stop and check:</b> "I need an ITIN for Stripe / PayPal / Amazon / to open a bank account" is not an IRS reason by itself.
+Ask whether they have a US tax return to file (then box b), or an original letter from a US bank or payer (then box h with Exception 1).
+If neither, the IRS will reject it – do not submit, explain this to the client and speak to {{caa.responsible_party or 'the responsible party'}}.</div>
+<div class="tip">Boxes b, c, d, e, f and g always need a US tax return attached <b>unless</b> an exception applies (then also tick h). Box a always needs h too – the system ticks it for you.</div>
+</div>
+
+<div class="card g" id="exceptions"><h2>4. Exceptions – what to write on the box h line and what to attach</h2>
+<p>Only use these when there is <b>no tax return</b>. Choose the text from the list in the system (box h field).</p>
+<table><tr><th>Write on box h</th><th>Who it is for</th><th>Document needed (originals/certified)</th></tr>
+<tr><td>Exception 1(a)</td><td>Partner in a US partnership / multi-member LLC that invests in the US and has income subject to withholding</td><td>Copy of the partnership or LLC agreement showing the entity's EIN and that the client is a partner</td></tr>
+<tr><td>Exception 1(b)</td><td>Has an interest-bearing US <b>business</b> bank account with income effectively connected to a US business</td><td>Original signed letter from the bank on its letterhead</td></tr>
+<tr><td>Exception 1(c)</td><td>Resident alien with an interest-bearing personal US bank account</td><td>Original signed letter from the bank on its letterhead</td></tr>
+<tr><td>Exception 1(d)</td><td>Receives pensions, annuities, rent, royalties, dividends etc. and the payer (withholding agent) needs the ITIN</td><td>Original letter/document from the payer on its letterhead (or the contract)</td></tr>
+<tr><td>Exception 2(a)</td><td>Wages / fees / honoraria with a treaty claim (files Form 8233 with the payer)</td><td>Original employment letter, contract or speaking-engagement letter</td></tr>
+<tr><td>Exception 2(b) / 2(c)</td><td>Scholarships, fellowships, grants (with / without treaty)</td><td>Letter from the university, passport with US visa, SSA or DSO/RO letter (see IRS instructions)</td></tr>
+<tr><td>Exception 3</td><td>Has a home mortgage on US property</td><td>Evidence of the mortgage loan (e.g. contract of sale)</td></tr>
+<tr><td>Exception 4</td><td>Buying/selling US real estate where FIRPTA withholding applies</td><td>Form 8288 / 8288-A / 8288-B + sales contract or closing statement</td></tr>
+<tr><td>Exception 5, T.D. 9363</td><td>Non-US officer of a foreign company who must e-file under T.D. 9363</td><td>Original signed letter from the employer on company letterhead</td></tr></table>
+<div class="tip">Exception 1 can't be used if the client also has to file a US tax return – then use the return (box b) instead.</div>
+</div>
+
+<div class="card g" id="fields"><h2>5. Filling each field in the system</h2>
+<table><tr><th style="width:24%">Field</th><th>What to enter</th><th style="width:26%">If it doesn't apply</th></tr>
+<tr><td>Passport scan → Read with AI</td><td>Photo page in colour, all four corners visible. Then <b>check every field the AI filled</b> against the passport.</td><td>No AI? Type it in.</td></tr>
+<tr><td>Application type</td><td>New, unless the client already had an ITIN that expired (Renew).</td><td>—</td></tr>
+<tr><td>1a Name</td><td>Exactly as on the passport. Same spelling as on the tax return.</td><td>No middle name → leave blank</td></tr>
+<tr><td>1b Name at birth</td><td>Only if different from the passport (e.g. maiden name).</td><td>Leave closed/blank</td></tr>
+<tr><td>2 Mailing address</td><td>Where the IRS posts the ITIN letter – usually the client's home address. P.O. box only if no street delivery.</td><td>Required</td></tr>
+<tr><td>3 Foreign address</td><td>The client's permanent home address outside the US. <b>Leave blank if it is the same as line 2</b> – the system copies line 2. If line 2 is a US address, you must enter the foreign address. No P.O. box.</td><td>Copied from line 2</td></tr>
+<tr><td>4 Date of birth / country / city</td><td>From the passport. If the passport shows only a city, ask the client for the country.</td><td>City optional</td></tr>
+<tr><td>5 Sex</td><td>From the passport.</td><td>—</td></tr>
+<tr><td>6a Citizenship</td><td>Country name in full (e.g. Pakistan, not PAK).</td><td>Required</td></tr>
+<tr><td>6b Foreign tax ID</td><td>Their own country's tax number (e.g. NTN, UTR).</td><td>Leave blank → printed as N/A</td></tr>
+<tr><td>6c US visa</td><td>Type, number, expiry – only US visas.</td><td>Leave blank → N/A</td></tr>
+<tr><td>6d Document</td><td>Passport (normally). Issued by = country. Number + expiry from the passport. <b>Date of entry into the US</b> from the last US entry stamp.</td><td>Never been to the US → leave the date blank; the form prints "Never entered the U.S."</td></tr>
+<tr><td>6e / 6f Previous ITIN</td><td>Yes only if they ever had an ITIN or IRSN – enter the number and the name it was issued under.</td><td>No / Don't know</td></tr>
+<tr><td>6g College or company</td><td>Students: school, city/state, length of stay. Business: the US company name, city/state, length of stay.</td><td>Leave blank → N/A</td></tr>
+<tr><td>Phone</td><td>Client's phone with country code.</td><td>—</td></tr>
+<tr><td>Delegate</td><td>Only if someone signs for the applicant: parent/guardian of a child under 18, or a person holding Form 2848 power of attorney (attach it).</td><td>Leave blank</td></tr>
+<tr><td>Client reference</td><td>Our portal / invoice reference so we can find it later.</td><td>Optional</td></tr></table>
+</div>
+
+<div class="card g" id="docs"><h2>6. Documents and the Certificate of Accuracy (COA)</h2>
+<ol><li>The client shows the <b>original passport</b> (or a copy certified by the issuing agency/embassy) to {{caa.responsible_party or 'the responsible party'}}. It must be valid on the day we post.</li>
+<li>In the system tick <b>Passport – Identity</b> and <b>Passport – Foreign status</b> (ticked automatically when 6d is Passport).</li>
+<li>No passport? At least <b>two</b> documents are needed, one with a photo – e.g. national ID card + birth certificate. Tick each one under the right column.</li>
+<li>Dependants: we can only certify a <b>passport or birth certificate</b>. Any other dependant document must be the original or a certified copy sent to the IRS.</li>
+<li>We keep copies of everything we checked – every document uploaded is saved as a PDF with the application – and return originals to the client straight away.</li>
+<li>Posting is blocked until every document marked <b>Required</b> or <b>Required for this application</b> is uploaded.</li></ol>
+</div>
+
+<div class="card g" id="sign"><h2>7. Signing</h2>
+<div class="stop"><b>Ink only.</b> The W-7 and the COA are not on the IRS list of forms that accept electronic signatures. A typed name, a pasted image or a
+DocuSign-type signature will get the application suspended or rejected.</div>
+<ol><li>Our engagement form: press <b>Create signing link</b> on the application, send it by WhatsApp or email – the client signs on their phone and the signed PDF is saved automatically. Clients who prefer paper: "Download to sign on paper", then upload the signed scan as "engagement form".</li>
+<li>Print the W-7 and send it to the client (courier or post). The client signs and dates the "Signature of applicant" box with a pen and posts the <b>original</b> back.</li>
+<li>Under 18: a parent or court-appointed guardian signs and is entered as Delegate. Someone else signing for an adult needs Form 2848 attached.</li>
+<li>{{caa.responsible_party or 'The responsible party'}} signs and dates the Acceptance Agent box on the W-7 and the COA.</li>
+<li>Tick the three boxes in <b>Tracker A</b> with the dates. Posting is blocked until all three are ticked.</li></ol>
+</div>
+
+<div class="card g" id="post"><h2>8. Posting to the IRS</h2>
+<table><tr><th>Courier (recommended – tracked)</th><th>US Postal Service</th></tr>
+<tr><td>{{ addr['courier'][1]|join('<br>')|safe }}</td><td>{{ addr['usps'][1]|join('<br>')|safe }}</td></tr></table>
+<p><b>Envelope, in this order:</b> signed W-7 on top → tax return (or exception documents) → W-7-COA → copies of the documents we verified.</p>
+<p>Generate the label, post it, then in <b>Tracker B</b> tick the checklist and "Postage label generated", and enter carrier, tracking number and date posted.
+The 2-month reminder starts from that date.</p>
+</div>
+
+<div class="card g" id="after"><h2>9. After posting</h2>
+<table><tr><th>What happens</th><th>What to do</th></tr>
+<tr><td>Nothing for about 2 months (8 weeks; 11 weeks if posted 15 Jan – 30 Apr)</td><td>Nothing. The row stays white.</td></tr>
+<tr><td>Row turns orange (past the expected date)</td><td>Call the IRS W-7 status line for acceptance agents: <b>{{phone}}</b>. Write what they said in Tracker C notes.</td></tr>
+<tr><td>IRS letter CP565 – ITIN issued</td><td>Tracker C → "ITIN issued", enter the ITIN and letter date. Send the client their ITIN.</td></tr>
+<tr><td>IRS letter CP566 – suspended (more information needed)</td><td>Tracker C → "Suspended". Send the requested documents before the deadline on the letter.</td></tr>
+<tr><td>IRS letter CP567 – rejected</td><td>Tracker C → "Rejected", note the reason, tell {{caa.responsible_party or 'the responsible party'}} before contacting the client.</td></tr></table>
+</div>
+
+<div class="card g" id="renew"><h2>10. Renewals and our PTIN</h2>
+<ul><li>An ITIN expires if it is not used on a US tax return for 3 years in a row. Renew only when the client is filing a return – tick <b>Renew</b>, 6e Yes, old ITIN in 6f, attach the return.</li>
+<li>Our responsible party's PTIN ({{caa.ptin}}) must be renewed every year (renewals open mid-October). The system shows a red reminder 75 days before {{caa.ptin_expiry|ukdate if caa.ptin_expiry else 'expiry'}}; after renewing, update "PTIN valid until" in our Acceptance Agent details.</li></ul>
+</div>
+
+<div class="card g" id="dont"><h2>11. Common mistakes that get applications rejected</h2>
+<ul><li>No tax return attached for boxes b–g (and no exception claimed).</li>
+<li>Box a ticked without box h and the treaty country/article.</li>
+<li>Name spelt differently from the passport or the tax return.</li>
+<li>Passport expired by the time we post.</li>
+<li>Typed or digital signature, or the applicant forgot to date it.</li>
+<li>Line 3 foreign address missing for box b.</li>
+<li>Exception claimed without the original bank/payer letter.</li></ul>
+<p><a class="btn" href="/itin">← Back to ITIN applications</a></p></div>
+{% endblock %}"""
+
+
+# ----------------------------------------------------------------------------- client engagement form (signed online)
+
+ENGAGE_TERMS_FILE = OUT / "engagement_terms.json"
+TOKENS_FILE = OUT / "sign_tokens.json"
+
+ENGAGE_DEFAULT = {
+    "default_fee": "",
+    "title": "ITIN Application – Client Engagement and Authorisation",
+    "terms": """1. Who we are
+Startitup Global Inc (trading as Startitup Global), 5904 Jessamine Street, Suite 15, Houston, TX 77081, USA, is an IRS Certifying Acceptance Agent (CAA). "We" means Startitup Global Inc. "You" means the applicant named below.
+
+2. What we will do
+We will check your identity documents, prepare IRS Form W-7 (Application for IRS Individual Taxpayer Identification Number) and Form W-7-COA (Certificate of Accuracy), and send your application to the IRS. Preparing a US tax return is not part of this engagement unless we agree it separately in writing.
+
+3. Fee
+Our fee for this application is {fee}. It is payable before we send your application to the IRS. Once your application has been posted to the IRS the fee is not refundable, whatever the IRS decides.
+
+4. What you agree to do
+- Give us true, complete and up-to-date information.
+- Give us genuine, current identity documents (originals or copies certified by the issuing agency).
+- Sign Form W-7 by hand in ink and return the original to us – the IRS does not accept an electronic signature on Form W-7.
+- Tell us straight away about any change to your details, and reply promptly if the IRS asks for more information.
+
+5. No guarantee
+Only the IRS can issue an ITIN. The IRS usually takes about 7 weeks, and up to 11 weeks between January and April or for applications from abroad. We cannot guarantee that an ITIN will be issued or when.
+
+6. Your authority
+You authorise us to act as your Certifying Acceptance Agent for this application, to deal with the IRS ITIN Program about it, and to receive copies of IRS notices about your application.
+
+7. Your documents and personal data
+We use your information only to provide this service and to meet our obligations to the IRS and under the law. We share it only with the IRS. As required by our IRS Acceptance Agent agreement, we keep copies of your Form W-7, supporting documents and IRS notices for three calendar years after the year your application is mailed to the IRS, and then delete them securely.
+
+8. Electronic signature
+You agree to sign this engagement electronically, and that your electronic signature has the same effect as a handwritten one.
+
+9. Ending this engagement
+You can end this engagement in writing at any time before we post your application; we will then return your documents. If you end it after we have started work, the fee for work done may be charged."""}
+
+DECLARATIONS = [
+    "The information I have given is true, complete and about me.",
+    "The identity documents I have provided are genuine and current.",
+    "I have read and agree to the terms above, including the fee.",
+    "I understand I must still sign the IRS Form W-7 by hand in ink and return the original.",
+    "I agree to sign this engagement electronically.",
+]
+
+
+def load_engage() -> dict:
+    d = dict(ENGAGE_DEFAULT)
+    try:
+        d.update(json.loads(ENGAGE_TERMS_FILE.read_text()))
+    except Exception:
+        pass
+    return d
+
+
+def _tokens() -> dict:
+    try:
+        return json.loads(TOKENS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _job_for_token(token: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", token or ""):
+        abort(404)
+    job = _tokens().get(token)
+    if not job:
+        abort(404)
+    d = _job_dir(job)
+    return d, json.loads((d / "job.json").read_text())
+
+
+def _mask(s: str) -> str:
+    s = s or ""
+    return ("•" * max(0, len(s) - 4)) + s[-4:] if len(s) > 4 else s
+
+
+def engagement_pdf(m: dict, eng: dict, fee: str, signed: dict | None = None) -> bytes:
+    """The engagement as a PDF. signed=None → blank copy for signing on paper."""
+    import hashlib, html as H
+    import pymupdf
+    a = m["a"]
+    name = " ".join(x for x in (a["first"], a["middle"], a["last"]) if x)
+    terms = eng["terms"].replace("{fee}", fee or "as agreed with us in writing")
+    body = []
+    for block in terms.split("\n\n"):
+        lines = block.strip().split("\n")
+        if not lines or not lines[0]:
+            continue
+        body.append(f"<h3>{H.escape(lines[0])}</h3>")
+        bullets = [l[2:] for l in lines[1:] if l.startswith("- ")]
+        paras = [l for l in lines[1:] if not l.startswith("- ")]
+        body += [f"<p>{H.escape(p)}</p>" for p in paras]
+        if bullets:
+            body.append("<ul>" + "".join(f"<li>{H.escape(b)}</li>" for b in bullets) + "</ul>")
+    rows = [("Applicant", name), ("Date of birth", a.get("dob") and dt.date.fromisoformat(a["dob"]).strftime("%d/%m/%Y") or ""),
+            ("Passport / ID number", a.get("id_number", "")), ("Address", ", ".join(x for x in (a.get("mail_1"), a.get("mail_2")) if x)),
+            ("Phone", (signed or {}).get("phone") or a.get("phone", "")), ("Email", (signed or {}).get("email", "")),
+            ("Our reference", a.get("client_ref") or m["job"])]
+    tbl = "".join(f"<tr><td class='k'>{H.escape(k)}</td><td>{H.escape(v or '')}</td></tr>" for k, v in rows)
+    tick = "&#9745;" if signed else "&#9744;"
+    decl = "".join(f"<p>{tick} {H.escape(x)}</p>" for x in DECLARATIONS)
+    if signed:
+        sig = (f"<p><img src='sig.png' width='220'/></p><p><b>Signed by:</b> {H.escape(signed['typed_name'])}<br/>"
+               f"<b>Date:</b> {H.escape(signed['when_local'])}</p>")
+        digest = hashlib.sha256(terms.encode()).hexdigest()
+        audit = (f"<h3>Electronic signature record</h3><p class='s'>Signed online at {H.escape(signed['when_utc'])} UTC · "
+                 f"IP address {H.escape(signed['ip'])} · Device: {H.escape(signed['ua'][:160])} · Link ID {H.escape(signed['token'][:8])} · "
+                 f"Terms fingerprint (SHA-256) {digest[:32]}</p>")
+    else:
+        sig = ("<p>Signature: ______________________________________</p><p>Full name: ______________________________________</p>"
+               "<p>Date: ____ / ____ / ________</p>")
+        audit = ""
+    html = f"""<style>body{{font-family:sans-serif;font-size:10pt;line-height:1.4}} h1{{font-size:15pt;margin:0 0 4px}}
+h3{{font-size:10.5pt;margin:10px 0 2px}} p{{margin:2px 0 4px}} td{{padding:3px 6px;border:1px solid #bbb;font-size:9.5pt}}
+td.k{{width:150px;background:#f2f2f2;font-weight:bold}} .s{{font-size:8pt;color:#444}} .hd{{font-size:9pt;color:#555}}</style>
+<p class='hd'><b>Startitup Global Inc</b> · IRS Certifying Acceptance Agent · 5904 Jessamine Street, Suite 15, Houston, TX 77081 · +1 406-605-9190</p>
+<h1>{H.escape(eng['title'])}</h1>
+<table>{tbl}</table>{''.join(body)}<h3>Declarations</h3>{decl}<h3>Signature</h3>{sig}{audit}"""
+    arch = pymupdf.Archive()
+    if signed:
+        arch.add(signed["sig_png"], "sig.png")
+    story = pymupdf.Story(html=html, archive=arch)
+    buf = io.BytesIO()
+    w = pymupdf.DocumentWriter(buf)
+    page_rect, where = pymupdf.paper_rect("letter"), pymupdf.paper_rect("letter") + (50, 50, -50, -50)
+    more = 1
+    while more:
+        dev = w.begin_page(page_rect)
+        more, _ = story.place(where)
+        story.draw(dev)
+        w.end_page()
+    w.close()
+    return buf.getvalue()
+
+
+@bp.post("/itin/engagement-terms")
+def itin_engage_terms():
+    d = {k: (request.form.get(k) or "").strip() for k in ("default_fee", "title", "terms")}
+    if not d["terms"]:
+        d["terms"] = ENGAGE_DEFAULT["terms"]
+    with _LOCK:
+        OUT.mkdir(parents=True, exist_ok=True)
+        ENGAGE_TERMS_FILE.write_text(json.dumps(d, indent=1))
+    flash("Engagement form wording saved.")
+    return redirect("/itin#engagement")
+
+
+@bp.post("/itin/engagement-terms/reset")
+def itin_engage_reset():
+    ENGAGE_TERMS_FILE.unlink(missing_ok=True)
+    flash("Engagement form wording reset to the standard text.")
+    return redirect("/itin#engagement")
+
+
+@bp.post("/itin/job/<job>/engage")
+def itin_engage_link(job):
+    d = _job_dir(job)
+    fee = (request.form.get("fee") or "").strip()
+    if not fee:
+        flash("⚠ Enter the fee to show on the engagement form (e.g. USD 250).")
+        return redirect(f"/itin/job/{job}#track")
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        e = m.get("engage") or {}
+        if e.get("signed"):
+            flash("⚠ The client has already signed the engagement form.")
+            return redirect(f"/itin/job/{job}#track")
+        tok = e.get("token") or uuid.uuid4().hex
+        e.update({"token": tok, "fee": fee, "created": dt.datetime.now().isoformat(timespec="seconds")})
+        m["engage"] = e
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+        t = _tokens()
+        t[tok] = job
+        TOKENS_FILE.write_text(json.dumps(t, indent=1))
+    flash("Signing link ready – copy it and send it to the client.")
+    return redirect(f"/itin/job/{job}#track")
+
+
+@bp.get("/itin/job/<job>/engage/blank.pdf")
+def itin_engage_blank(job):
+    d = _job_dir(job)
+    m = json.loads((d / "job.json").read_text())
+    fee = (m.get("engage") or {}).get("fee") or request.args.get("fee") or load_engage().get("default_fee", "")
+    return send_file(io.BytesIO(engagement_pdf(m, load_engage(), fee)), mimetype="application/pdf",
+                     download_name=f"ITIN_engagement_{_safe(m['applicant'])}_to_sign.pdf")
+
+
+# --- public signing page (no login – protected by the 32-character link) ---
+
+@bp.get("/sign/itin/<token>")
+def sign_page(token):
+    d, m = _job_for_token(token)
+    e = m.get("engage") or {}
+    eng = load_engage()
+    return render_template_string(SIGN_PAGE, m=m, a=m["a"], e=e, eng=eng, token=token, decl=DECLARATIONS,
+                                  terms=eng["terms"].replace("{fee}", e.get("fee") or "as agreed with us in writing"),
+                                  masked=_mask(m["a"].get("id_number", "")), err="")
+
+
+@bp.post("/sign/itin/<token>")
+def sign_submit(token):
+    d, m = _job_for_token(token)
+    e = m.get("engage") or {}
+    if e.get("signed"):
+        return redirect(f"/sign/itin/{token}")
+    f = request.form
+    typed = (f.get("typed_name") or "").strip()
+    sig = f.get("sig") or ""
+    errs = []
+    if len(typed) < 3:
+        errs.append("Type your full name.")
+    if not all(f.get(f"decl_{i}") for i in range(len(DECLARATIONS))):
+        errs.append("Tick every declaration.")
+    if not sig.startswith("data:image/png;base64,") or len(sig) < 1500:
+        errs.append("Draw your signature in the box.")
+    eng = load_engage()
+    if errs:
+        return render_template_string(SIGN_PAGE, m=m, a=m["a"], e=e, eng=eng, token=token, decl=DECLARATIONS,
+                                      terms=eng["terms"].replace("{fee}", e.get("fee") or "as agreed with us in writing"),
+                                      masked=_mask(m["a"].get("id_number", "")), err=" ".join(errs), form=f)
+    now = dt.datetime.now(dt.timezone.utc)
+    signed = {"typed_name": typed, "email": (f.get("email") or "").strip()[:120], "phone": (f.get("phone") or "").strip()[:40],
+              "when_utc": now.strftime("%Y-%m-%d %H:%M:%S"), "when_local": now.strftime("%d/%m/%Y"),
+              "ip": (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
+              "ua": request.headers.get("User-Agent", ""), "token": token,
+              "sig_png": base64.b64decode(sig.split(",", 1)[1])}
+    pdf = engagement_pdf(m, eng, e.get("fee", ""), signed)
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        tag = _safe(f"{m['a']['last']}_{m['a']['first']}")
+        fname = f"engagement_{tag}_signed.pdf"
+        (d / fname).write_bytes(pdf)
+        m["files"] = [x for x in m["files"] if x["file"] != fname] + [
+            {"file": fname, "label": "Engagement form (signed online)", "kind": "engagement", "orig": "Signed online"}]
+        e = m.get("engage") or {}
+        e.update({k: v for k, v in signed.items() if k != "sig_png"}, signed=True, file=fname)
+        m["engage"] = e
+        t = m.get("track") or {}
+        before = track_info(m)["stage"]
+        t["consent"], t["consent_date"] = True, now.date().isoformat()
+        m["track"] = t
+        after = track_info(m)["stage"]
+        hist = m.get("history") or []
+        hist.append({"when": dt.datetime.now().isoformat(timespec="seconds"), "stage": "engagement signed online",
+                     "staff": "client"})
+        if after != before:
+            hist.append({"when": dt.datetime.now().isoformat(timespec="seconds"), "stage": after, "staff": "client"})
+        m["history"] = hist
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    _ALERT_CACHE["at"] = 0
+    return redirect(f"/sign/itin/{token}")
+
+
+@bp.get("/sign/itin/<token>/copy.pdf")
+def sign_copy(token):
+    d, m = _job_for_token(token)
+    e = m.get("engage") or {}
+    if not e.get("signed"):
+        abort(404)
+    return send_file(d / e["file"], mimetype="application/pdf", download_name="ITIN_engagement_signed.pdf")
+
+
+SIGN_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ITIN engagement – Startitup Global</title>
+<style>
+:root{--ink:#111;--muted:#666;--line:#e5e7eb}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f4;color:var(--ink);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:16px}.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;margin:14px 0}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:0 0 10px}.muted{color:var(--muted);font-size:14px}
+table{width:100%;border-collapse:collapse}td{border-bottom:1px solid var(--line);padding:7px 4px;vertical-align:top;font-size:15px}td.k{color:var(--muted);width:40%}
+.terms{white-space:pre-wrap;font-size:14.5px;max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:14px;background:#fafafa}
+label.d{display:flex;gap:10px;align-items:flex-start;margin:10px 0;font-size:15px}label.d input{width:22px;height:22px;flex:0 0 22px;margin-top:1px}
+input[type=text],input[type=email],input[type=tel]{width:100%;padding:11px;border:1px solid #cbd5e1;border-radius:9px;font-size:16px}
+canvas{width:100%;height:180px;border:2px dashed #94a3b8;border-radius:10px;background:#fff;touch-action:none}
+.btn{display:inline-block;background:#111;color:#fff;border:0;border-radius:10px;padding:13px 20px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none}
+.btn.sec{background:#e5e7eb;color:#111}.err{background:#fee2e2;color:#991b1b;border-radius:10px;padding:12px}.ok{background:#dcfce7;color:#14532d;border-radius:10px;padding:14px}
+.brand{font-weight:800;font-size:18px}
+</style></head><body><div class="wrap">
+<div class="brand">Startitup Global</div><div class="muted">IRS Certifying Acceptance Agent · Houston, Texas</div>
+{% if e.signed %}
+<div class="card"><h1>Thank you, {{e.typed_name}}</h1>
+<div class="ok">✔ Your ITIN engagement form was signed on {{e.when_local}}. We have received it – there is nothing more to do on this page.</div>
+<p><b>Next step:</b> we will send you your Form W-7 to sign by hand with a pen. Please sign, date and return the original to us as soon as you receive it.</p>
+<p><a class="btn sec" href="/sign/itin/{{token}}/copy.pdf">Download your signed copy (PDF)</a></p></div>
+{% else %}
+<div class="card"><h1>{{eng.title}}</h1><p class="muted">Please check your details, read the terms, tick the boxes and sign at the bottom. It takes about 3 minutes.</p>
+{% if err %}<div class="err">{{err}}</div>{% endif %}
+<h2>Your details</h2><table>
+<tr><td class="k">Name</td><td>{{ [a.first, a.middle, a.last]|select|join(' ') }}</td></tr>
+<tr><td class="k">Date of birth</td><td>{{ a.dob|ukdate if a.dob else '' }}</td></tr>
+<tr><td class="k">Passport / ID number</td><td>{{masked}}</td></tr>
+<tr><td class="k">Address</td><td>{{ [a.mail_1, a.mail_2]|select|join(', ') }}</td></tr>
+<tr><td class="k">Fee</td><td><b>{{e.fee}}</b></td></tr></table>
+<p class="muted">Something wrong? Don't sign – reply to the message we sent you and we'll correct it.</p></div>
+<form method="post" id="sf" onsubmit="return go()">
+<div class="card"><h2>Terms</h2><div class="terms">{{terms}}</div></div>
+<div class="card"><h2>Declarations</h2>
+{% for x in decl %}<label class="d"><input type="checkbox" name="decl_{{loop.index0}}" value="1" {% if form and form.get('decl_'~loop.index0) %}checked{% endif %}> {{x}}</label>{% endfor %}</div>
+<div class="card"><h2>Your contact details</h2>
+<label>Email</label><input type="email" name="email" value="{{ form.email if form else '' }}" autocomplete="email">
+<div style="height:10px"></div><label>Phone (with country code)</label><input type="tel" name="phone" value="{{ form.phone if form else a.phone }}" autocomplete="tel"></div>
+<div class="card"><h2>Sign</h2>
+<label>Type your full name</label><input type="text" name="typed_name" value="{{ form.typed_name if form else '' }}" autocomplete="name">
+<div style="height:12px"></div><label>Draw your signature with your finger or mouse</label>
+<canvas id="pad"></canvas><div style="margin-top:8px"><button type="button" class="btn sec" onclick="clr()">Clear</button></div>
+<input type="hidden" name="sig" id="sig">
+<p class="muted">By pressing "Sign and submit" you sign this engagement electronically. Your signature, the date and time, your IP address and device are recorded.</p>
+<button class="btn" type="submit">Sign and submit</button></div></form>
+<script>
+var c=document.getElementById('pad'), x=c.getContext('2d'), drawing=false, drawn=0;
+function size(){ var r=c.getBoundingClientRect(), d=window.devicePixelRatio||1; c.width=r.width*d; c.height=r.height*d; x.scale(d,d); x.lineWidth=2.4; x.lineCap='round'; x.lineJoin='round'; x.strokeStyle='#0b1f66' }
+size();
+function pt(e){ var r=c.getBoundingClientRect(), t=e.touches?e.touches[0]:e; return [t.clientX-r.left, t.clientY-r.top] }
+function down(e){ e.preventDefault(); drawing=true; var p=pt(e); x.beginPath(); x.moveTo(p[0],p[1]) }
+function move(e){ if(!drawing) return; e.preventDefault(); var p=pt(e); x.lineTo(p[0],p[1]); x.stroke(); drawn++ }
+function up(){ drawing=false }
+c.addEventListener('mousedown',down); c.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
+c.addEventListener('touchstart',down,{passive:false}); c.addEventListener('touchmove',move,{passive:false}); c.addEventListener('touchend',up);
+function clr(){ x.clearRect(0,0,c.width,c.height); drawn=0 }
+function go(){
+  if(drawn < 8){ alert('Please draw your signature in the box.'); return false }
+  if(document.querySelectorAll('[name^=decl_]:checked').length < {{decl|length}}){ alert('Please tick every declaration.'); return false }
+  document.getElementById('sig').value = c.toDataURL('image/png'); return true }
+</script>
+{% endif %}
+<p class="muted" style="text-align:center;margin-top:20px">Startitup Global Inc · 5904 Jessamine Street, Suite 15, Houston, TX 77081 · +1 406-605-9190</p>
+</div></body></html>"""
