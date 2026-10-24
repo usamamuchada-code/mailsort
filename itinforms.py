@@ -153,6 +153,31 @@ agreement, employment letter, mortgage or property sale papers, Form 8288). Retu
 }
 
 
+def _norm_image(data: bytes) -> bytes:
+    """Any photo format (WebP from WhatsApp, HEIC from iPhone if pillow-heif is installed, PNG, BMP, TIFF, GIF)
+    -> upright RGB JPEG. PDFs are returned unchanged."""
+    if data[:4] == b"%PDF":
+        return data
+    from PIL import Image, ImageOps
+    try:
+        import pillow_heif                      # optional – iPhone HEIC photos
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
+    im = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+    if im.mode in ("RGBA", "LA", "P"):
+        bg = Image.new("RGB", im.size, "white")
+        im = im.convert("RGBA")
+        bg.paste(im, mask=im.split()[-1])
+        im = bg
+    im = im.convert("RGB")
+    if max(im.size) > 3000:
+        im.thumbnail((3000, 3000))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
 def _to_images(data: bytes, filename: str) -> list[tuple[str, bytes]]:
     """Return [(media_type, bytes)] – PDFs are rendered page by page (max 2 pages)."""
     name = (filename or "").lower()
@@ -165,6 +190,11 @@ def _to_images(data: bytes, filename: str) -> list[tuple[str, bytes]]:
                 break
             out.append(("image/png", page.get_pixmap(dpi=200).tobytes("png")))
         return out
+    if not (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n"):
+        try:
+            data = _norm_image(data)            # WebP / HEIC / BMP ... -> JPEG
+        except Exception:
+            pass
     mt = "image/png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         mt = "image/webp"
@@ -355,12 +385,50 @@ def fill_irs(template: Path, values: dict, keep_pages: int | None = None, overla
     return buf.getvalue()
 
 
+AGENT_FIELDS = ("f1_42[0]", "f1_43[0]", "f1_44[0]", "f1_45[0]", "f1_46[0]", "f1_47[0]", "f1_48[0]")   # W-7 Acceptance Agent box
+
+
+def customer_copy_pdf(a: dict, caa: dict) -> bytes:
+    """W-7 for the client's own records: our Acceptance Agent details (phone, fax, name, company, EIN, PTIN,
+    office code) blanked and covered, the form flattened so it can't be edited, and a CUSTOMER COPY watermark."""
+    import pymupdf
+    v = w7_values(a, caa)
+    hide = list(AGENT_FIELDS)
+    if a.get("mail_choice") == "ours":           # line 2 is our office address – withhold it too
+        hide += ["f1_13[0]", "f1_14[0]"]
+    for k in hide:
+        v[k] = ""
+    doc = pymupdf.open(stream=fill_irs(TPL_DIR / "fw7.pdf", v, overlays=w7_overlays(a)), filetype="pdf")
+    page = doc[0]
+    rects = [w.rect for w in page.widgets() if any(w.field_name.endswith("." + k) for k in hide)]
+    try:
+        doc.bake()                               # form fields -> plain page content (not editable)
+    except Exception:
+        pass
+    for r in rects:                              # grey "withheld" boxes over our details
+        page.draw_rect(r, color=(0.55, 0.55, 0.55), fill=(0.86, 0.86, 0.86), width=0.4, overlay=True)
+        page.insert_textbox(r, "WITHHELD", fontsize=6, fontname="helv", color=(0.35, 0.35, 0.35), align=1)
+    for pg in doc:
+        W, H = pg.rect.width, pg.rect.height
+        for y in (H * 0.40, H * 0.74):
+            pg.insert_text((W * 0.14, y), "CUSTOMER COPY", fontsize=54, fontname="hebo", color=(0.85, 0.12, 0.12),
+                           fill_opacity=0.16, stroke_opacity=0.16, overlay=True,
+                           morph=(pymupdf.Point(W * 0.14, y), pymupdf.Matrix(-28)))
+        pg.insert_textbox(pymupdf.Rect(30, 8, W - 30, 30),
+                          "CUSTOMER COPY - for your records only. NOT for submission to the IRS. Acceptance Agent details withheld.",
+                          fontsize=8, fontname="hebo", color=(0.75, 0.1, 0.1), align=1, overlay=True)
+    buf = io.BytesIO()
+    doc.save(buf, garbage=3, deflate=True)
+    return buf.getvalue()
+
+
 def id_copy_pdf(data: bytes, filename: str) -> bytes:
     """The uploaded ID scan as a PDF (images are placed on an A4/Letter page)."""
     import pymupdf
     if data[:4] == b"%PDF":
         return data
-    img = pymupdf.open(stream=data, filetype=(filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"))
+    data = _norm_image(data)                    # WhatsApp .webp, iPhone .heic, sideways photos etc.
+    img = pymupdf.open(stream=data, filetype="jpg")
     rect = img[0].rect
     pdf = pymupdf.open()
     page = pdf.new_page(width=612, height=792)
@@ -457,7 +525,7 @@ def save_docs(d: Path, tag: str, files_list: list, getter) -> int:
             try:
                 (d / fname).write_bytes(id_copy_pdf(raw, up.filename))
             except Exception:
-                raise RuntimeError(f"\"{up.filename}\" could not be read – upload it as a PDF, JPG or PNG.")
+                raise RuntimeError(f"\"{up.filename}\" could not be read – upload it as a PDF, JPG, PNG or WebP photo.")
             files_list.append({"file": fname, "label": label.split(" – ")[0] + (f" ({i})" if i > 1 else ""),
                                "kind": key, "orig": up.filename[:120]})
             n += 1
@@ -994,6 +1062,17 @@ def itin_file(job, fname):
                      download_name=fname)
 
 
+@bp.get("/itin/job/<job>/customer-copy.pdf")
+def itin_customer_copy(job):
+    d = _job_dir(job)
+    m = json.loads((d / "job.json").read_text())
+    if m.get("status") in ("kyc_sent", "kyc_received"):
+        abort(404)
+    pdf = customer_copy_pdf(m["a"], load_caa())
+    return send_file(io.BytesIO(pdf), mimetype="application/pdf", as_attachment=request.args.get("inline") != "1",
+                     download_name=f"W-7_customer_copy_{_safe(m['applicant'])}.pdf")
+
+
 @bp.get("/itin/job/<job>/zip")
 def itin_zip(job):
     d = _job_dir(job)
@@ -1458,6 +1537,8 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
  {% if m.a.client_ref %}<div><b>Reference</b>{{m.a.client_ref}}</div>{% endif %}
 </div>
 <div class="btnrow" style="margin-top:14px"><a class="btn" href="/itin/job/{{m.job}}/zip">⬇ Download all ({{m.files|length}}) as ZIP</a>
+{% set w7f = [] %}{% for x in m.files if x.file.startswith('W-7_') %}{% if w7f.append(x) %}{% endif %}{% endfor %}{% if w7f %}<a class="btn secondary" href="/itin/job/{{m.job}}/file/{{w7f[0].file}}?inline=1" target="_blank">🖨 Print W-7 (for signing / IRS)</a>
+<a class="btn secondary" href="/itin/job/{{m.job}}/customer-copy.pdf?inline=1" target="_blank">🧾 Customer copy (our details masked)</a>{% endif %}
 <a class="btn secondary" href="/itin">New application</a></div>
 <p class="muted">Before sending to the IRS: check every field against the documents; the applicant signs and dates the W-7;
 our responsible party signs and dates the Acceptance Agent box and the Certificate of Accuracy; attach the copy of the
