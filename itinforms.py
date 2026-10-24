@@ -408,7 +408,7 @@ def doc_rules(a: dict) -> dict:
     pp = (a.get("id_type") or "passport") == "passport"
     ret = r & set("bcdefg")
     out = {
-        "engagement": ("req", "Needed before we post"),
+        "engagement": ("na", "Not needed – manual filing") if a.get("manual") else ("req", "Needed before we post"),
         "passport": ("req", "Proves identity and foreign status on its own") if pp else ("opt", ""),
         "national_id": ("opt", "") if pp else ("cond", "No passport – at least two IDs, one with a photo"),
         "birth_cert": ("cond", "Dependant without a passport") if (not pp and "d" in r) else ("opt", ""),
@@ -667,13 +667,12 @@ def manual_from_form(f, errs: list) -> dict | None:
     if not f.get("manual"):
         return None
     man = {k: (f.get(f"m_{k}") or "").strip() for k in
-           ("kyc_date", "kyc_by", "kyc_how", "fee", "engage_date", "applicant_date", "rp_date")}
+           ("kyc_date", "kyc_by", "kyc_how", "applicant_date", "rp_date")}
     man["confirm"] = bool(f.get("m_confirm"))
     if man["kyc_how"] not in MANUAL_HOW:
         man["kyc_how"] = "in_person"
     today = dt.date.today()
     for k, lbl, need in (("kyc_date", "the date the KYC / ID check was done", True),
-                         ("engage_date", "the date the client signed our paper engagement form", True),
                          ("applicant_date", "the date the applicant signed the W-7", False),
                          ("rp_date", "the date the responsible party signed", False)):
         v = _d(man[k])
@@ -686,7 +685,7 @@ def manual_from_form(f, errs: list) -> dict | None:
     if not man["kyc_by"]:
         errs.append("Manual filing: enter who did the KYC / ID check.")
     if not man["confirm"]:
-        errs.append("Manual filing: tick the confirmation that the ID originals were seen and the signed paper forms are on file.")
+        errs.append("Manual filing: tick the confirmation that the ID originals were seen.")
     return man
 
 
@@ -695,15 +694,10 @@ def apply_manual(meta: dict, man: dict):
     now = dt.datetime.now().isoformat(timespec="seconds")
     staff = meta.get("staff") or "admin"
     meta["manual"] = dict(man, marked_by=staff, when=now)
-    eng_files = [x["file"] for x in meta.get("files", []) if x.get("kind") == "engagement"]
-    e = meta.get("engage") or {}
-    if not e.get("signed"):                      # an online signature, if any, always wins
-        e.update(manual=True, fee=man.get("fee") or e.get("fee", ""), paper_date=man["engage_date"],
-                 paper_file=eng_files[0] if eng_files else "")
-        meta["engage"] = e
+    meta.setdefault("a", {})["manual"] = man      # doc_rules(): no engagement form needed for manual filing
     t = meta.get("track") or {}
     before = track_info(meta)["stage"] if meta.get("track") else ""
-    t.update(consent=True, consent_date=man["engage_date"] or t.get("consent_date", ""))
+    t.update(consent=True, consent_date=man["kyc_date"] or t.get("consent_date", ""))   # consent taken at the KYC meeting
     if man.get("applicant_date"):
         t.update(applicant_signed=True, applicant_signed_date=man["applicant_date"])
     if man.get("rp_date"):
@@ -866,8 +860,6 @@ def itin_generate():
         flash("✍️ Manual filing recorded – " + ti["stage_label"] + ".")
         if man.get("applicant_date"):
             flash("⚠ Post the W-7 the applicant actually signed in ink. If they signed a blank or hand-filled W-7, print this one and get it signed again.")
-        if "engagement" not in uploaded_kinds(meta):
-            flash("📎 Upload the scan of the signed paper engagement form (Documents below) – posting stays blocked until it is uploaded.")
     return redirect(f"/itin/job/{job}")
 
 
@@ -1075,7 +1067,7 @@ When they submit, the application appears below as <b>"KYC received"</b> with ev
 <button class="btn" type="submit">Create KYC link</button></form></div>
 <div class="card" id="manualstart" style="border:2px solid #16a34a"><h2 style="margin-top:0">✍️ Manual filing – KYC &amp; signatures already done offline</h2>
 <p class="muted" style="margin-top:0">Use this when you have met the client (or checked their originals) yourself and collected the signatures on paper – no KYC link is sent.
-Fill in the form below as normal, upload the documents and the scan of the signed paper engagement form, then complete <b>step 5 – Manual filing</b>.
+Fill in the form below as normal, upload the documents, then complete <b>step 5 – Manual filing</b>. No engagement form is needed.
 The tracker ticks client consent (and the signatures, if you enter their dates) automatically.</p>
 <div class="btnrow"><a class="btn" href="/itin?manual=1#docs" onclick="if(window.setManual){setManual(true);document.getElementById('docs').scrollIntoView();return false}">Start a manual application ↓</a></div></div>
 {% endif %}
@@ -1223,15 +1215,13 @@ This is a manual filing – I checked the client's ID myself and collected the s
 <div><label>KYC / ID check done on</label><input type="date" name="m_kyc_date" value="{{pm.kyc_date}}"></div>
 <div><label>KYC done by (staff name)</label><input type="text" name="m_kyc_by" value="{{pm.kyc_by or (caa.responsible_party if caa else '')}}"></div>
 <div><label>How the ID was checked</label><select name="m_kyc_how">{% for k, lbl in [('in_person','In person – originals seen'),('certified','Certified copies received'),('video','Video call + originals seen')] %}<option value="{{k}}" {% if pm.kyc_how == k %}selected{% endif %}>{{lbl}}</option>{% endfor %}</select></div>
-<div><label>Fee agreed</label><input type="text" name="m_fee" value="{{pm.fee or eng.default_fee}}" placeholder="e.g. USD 250"></div>
-<div><label>Client signed our engagement form (paper) on</label><input type="date" name="m_engage_date" value="{{pm.engage_date}}"></div>
 <div><label>Applicant signed the W-7 in ink on <span class="muted">(blank if not yet)</span></label><input type="date" name="m_applicant_date" value="{{pm.applicant_date}}"></div>
 <div><label>{{ (caa.responsible_party if caa else '') or 'Responsible party' }} signed agent box + COA on <span class="muted">(blank if not yet)</span></label><input type="date" name="m_rp_date" value="{{pm.rp_date}}"></div>
 </div>
 <div class="warn" style="margin-top:10px"><b>The applicant must sign the completed W-7 that we post.</b> A signature on a blank W-7, or on a different version, is not valid.
 If the client hasn't signed this filled-in W-7 yet, leave that date blank – print the W-7 after pressing Create, get it signed in ink, then tick it in the tracker.
-In step 1, upload the scan of the signed paper engagement form (row "Our ITIN application / engagement form") and, if you have it, the signed W-7 scan.</div>
-<label class="tick"><input type="checkbox" name="m_confirm" value="1" {% if pm.confirm %}checked{% endif %}> I confirm our responsible party saw the ID originals (or certified copies) and the signed paper forms are kept on file for 3 years (CAA agreement 6.04)</label>
+In step 1, upload the signed W-7 scan if you have it. No engagement form is needed for manual filing.</div>
+<label class="tick"><input type="checkbox" name="m_confirm" value="1" {% if pm.confirm %}checked{% endif %}> I confirm our responsible party saw the ID originals (or certified copies); KYC notes and ID copies are kept on file for 3 years (CAA agreement 6.04)</label>
 </div></div>
 
 <div class="card"><button class="btn" type="submit">Create W-7 + Certificate of Accuracy</button></div>
@@ -1278,7 +1268,7 @@ function docRules(){   // mirrors doc_rules() in itinforms.py
   var at = document.querySelector('[name=app_type]:checked'), renew = at && at.value=='renew';
   var del = document.querySelector('[name=delegate_rel]').value;
   return {
-    engagement: ['req','Needed before we post'],
+    engagement: on('manual_on') ? ['na','Not needed – manual filing'] : ['req','Needed before we post'],
     passport: pp ? ['req','Proves identity and foreign status on its own'] : ['opt',''],
     national_id: pp ? ['opt',''] : ['cond','No passport – at least two IDs, one with a photo'],
     birth_cert: (!pp && r.d) ? ['cond','Dependant without a passport'] : ['opt',''],
@@ -1387,7 +1377,6 @@ function beforeSubmit(){
     var f = function(n){ var e=document.querySelector('[name='+n+']'); return e ? e.value.trim() : '' };
     if(!f('m_kyc_date')) p.push('Manual filing: enter the KYC / ID check date.');
     if(!f('m_kyc_by')) p.push('Manual filing: enter who did the KYC.');
-    if(!f('m_engage_date')) p.push('Manual filing: enter the date the client signed our paper engagement form.');
     if(!document.querySelector('[name=m_confirm]').checked) p.push('Manual filing: tick the confirmation box.');
   }
   if(p.length){ alert(p.join('\n')); return false }
@@ -1469,12 +1458,10 @@ identity document and the tax return (or exception documents) as required by the
 {% if ti.stage == 'itin' %}<div class="okb">✔ ITIN issued: <b>{{t.itin_number}}</b>{% if t.outcome_date %} on {{t.outcome_date|ukdate}}{% endif %}.</div>{% endif %}
 
 {% set e = m.engage or {} %}
-<div class="tsec" style="background:#fafafa"><h3>Client engagement form <a class="muted" style="font-size:13px;font-weight:400" href="/itin/guide#sign">guide</a></h3>
-{% if e.manual and not e.signed %}{% set mn = m.manual or {} %}{% set ef = up.get('engagement') or [] %}
-<div class="okb">✍️ <b>Manual filing.</b> Client signed our engagement form on paper on <b>{{e.paper_date|ukdate}}</b>{% if e.fee %} (fee {{e.fee}}){% endif %}.
-KYC / ID checked on {{mn.kyc_date|ukdate}} by {{mn.kyc_by}} – {{ {'in_person':'in person, originals seen','certified':'certified copies','video':'video call + originals seen'}.get(mn.kyc_how, mn.kyc_how) }}.
-{% if ef %}<a href="/itin/job/{{m.job}}/file/{{ef[0].file}}?inline=1" target="_blank">View signed scan</a>{% endif %}</div>
-{% if not ef %}<div class="bad">📎 Upload the scan of the signed paper engagement form in <a href="#docs">Documents</a> – posting is blocked until it is uploaded.</div>{% endif %}
+<div class="tsec" style="background:#fafafa"><h3>{{ "Manual filing" if m.manual and not e.signed else "Client engagement form" }} <a class="muted" style="font-size:13px;font-weight:400" href="/itin/guide#sign">guide</a></h3>
+{% if m.manual and not e.signed %}{% set mn = m.manual or {} %}
+<div class="okb">✍️ <b>Manual filing</b> – no engagement form needed. KYC / ID checked on <b>{{mn.kyc_date|ukdate}}</b> by {{mn.kyc_by}} – {{ {'in_person':'in person, originals seen','certified':'certified copies','video':'video call + originals seen'}.get(mn.kyc_how, mn.kyc_how) }}.
+Client consent in section A was ticked from the KYC date.</div>
 {% elif e.signed %}<div class="okb">✔ Signed online by <b>{{e.typed_name}}</b> on {{e.when_local}} – <a href="/itin/job/{{m.job}}/file/{{e.file}}?inline=1" target="_blank">view signed PDF</a>. Consent in section A has been ticked automatically.</div>
 {% else %}
 <p class="muted" style="margin:2px 0 8px">Send the client a link – they check their details, read our terms, tick the declarations and sign with their finger or mouse.
@@ -1499,11 +1486,9 @@ The signed PDF is saved here and section A "client consent" ticks itself. (This 
 <div><label>KYC / ID check done on</label><input type="date" name="m_kyc_date"></div>
 <div><label>KYC done by (staff name)</label><input type="text" name="m_kyc_by" value="{{m.caa.responsible_party}}"></div>
 <div><label>How the ID was checked</label><select name="m_kyc_how"><option value="in_person">In person – originals seen</option><option value="certified">Certified copies received</option><option value="video">Video call + originals seen</option></select></div>
-<div><label>Fee agreed</label><input type="text" name="m_fee" value="{{ e.fee or eng.default_fee }}"></div>
-<div><label>Client signed our engagement form (paper) on</label><input type="date" name="m_engage_date"></div>
 <div><label>Applicant signed this W-7 in ink on (blank if not yet)</label><input type="date" name="m_applicant_date"></div>
 <div><label>{{m.caa.responsible_party or 'Responsible party'}} signed on (blank if not yet)</label><input type="date" name="m_rp_date"></div></div>
-<label class="tick"><input type="checkbox" name="m_confirm" value="1"> I confirm our responsible party saw the ID originals (or certified copies) and the signed paper forms are on file</label>
+<label class="tick"><input type="checkbox" name="m_confirm" value="1"> I confirm our responsible party saw the ID originals (or certified copies)</label>
 <button class="btn" type="submit">Record manual filing</button></form></details>{% endif %}
 
 <form method="post" action="/itin/job/{{m.job}}/track">
@@ -1725,7 +1710,7 @@ DocuSign-type signature will get the application suspended or rejected.</div>
 <li>{{caa.responsible_party or 'The responsible party'}} signs and dates the Acceptance Agent box on the W-7 and the COA.</li>
 <li>Tick the three boxes in <b>Tracker A</b> with the dates. Posting is blocked until all three are ticked.</li></ol>
 <p><b>Manual filing</b> (KYC and signatures done offline, no link): on the ITIN page press <b>Start a manual application</b>, fill the W-7 as normal, upload the
-documents plus the scan of the signed paper engagement form, and complete step 5 with the KYC and signing dates. Tracker A ticks itself from those dates.
+documents (no engagement form needed), and complete step 5 with the KYC and signing dates. Tracker A ticks itself from those dates.
 An existing application (e.g. a KYC link the client never finished) can be switched with <b>Switch to manual filing</b> on its page.</p>
 </div>
 
