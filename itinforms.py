@@ -1029,7 +1029,8 @@ def itin_job(job):
                                   missing_docs=missing_required(m), missing_docs_keys=[], eng=load_engage(),
                                   base_url=(request.headers.get("X-Forwarded-Proto") or request.scheme).split(",")[0] + "://" + request.host,
                                   addr=IRS_ADDR, outcomes=OUTCOMES, support=support_doc(m["a"]), phone=IRS_STATUS_PHONE,
-                                  today=dt.date.today().isoformat(), ptin_msg=ptin_alert(load_caa()), stages=STAGES)
+                                  today=dt.date.today().isoformat(), ptin_msg=ptin_alert(load_caa()), stages=STAGES,
+                                  delete_block=can_delete(m))
 
 
 @bp.post("/itin/job/<job>/upload")
@@ -1143,6 +1144,59 @@ def itin_file(job, fname):
         abort(404)
     return send_file(d / fname, mimetype="application/pdf", as_attachment=request.args.get("inline") != "1",
                      download_name=fname)
+
+
+DELETED_LOG = OUT / "deleted.json"
+
+
+def can_delete(m: dict) -> str:
+    """'' if the application may be deleted, otherwise the reason it can't.
+    CAA agreement 6.04: keep the W-7, COA, ID evidence and interview file for 3 years after the year it was mailed."""
+    t = m.get("track") or {}
+    if (t.get("label_done") and t.get("posted_date")) or t.get("outcome") in ("itin", "rejected", "suspended"):
+        return ("It has been posted to the IRS – our CAA agreement (section 6.04) says we must keep the records for 3 years. "
+                "Set the IRS decision to \"Withdrawn / cancelled by us\" instead.")
+    return ""
+
+
+@bp.post("/itin/job/<job>/delete")
+def itin_delete(job):
+    import shutil
+    d = _job_dir(job)
+    m = json.loads((d / "job.json").read_text())
+    why = can_delete(m)
+    if why:
+        flash("⚠ This application can't be deleted. " + why)
+        return redirect(f"/itin/job/{job}#delete")
+    if request.form.get("pw", "") != os.environ.get("DELETE_PASSWORD", "askusama"):
+        flash("⚠ Wrong delete password – nothing was deleted.")
+        return redirect(f"/itin/job/{job}#delete")
+    if (request.form.get("confirm_name") or "").strip().upper() != (m.get("applicant") or "").strip().upper():
+        flash("⚠ Type the applicant's name exactly as shown to confirm – nothing was deleted.")
+        return redirect(f"/itin/job/{job}#delete")
+    staff = session.get("user") or os.environ.get("MAILSORT_USER", "admin")
+    with _LOCK:
+        log = [x for x in _load_log() if x.get("job") != job]
+        LOG_FILE.write_text(json.dumps(log, indent=1))
+        for fpath in (TOKENS_FILE, KYC_TOKENS_FILE):          # old signing / KYC links stop working
+            try:
+                toks = json.loads(fpath.read_text())
+                toks = {k: v for k, v in toks.items() if v != job}
+                fpath.write_text(json.dumps(toks, indent=1))
+            except Exception:
+                pass
+        try:
+            dl = json.loads(DELETED_LOG.read_text())
+        except Exception:
+            dl = []
+        dl.insert(0, {"job": job, "applicant": m.get("applicant", ""), "created": m.get("when", ""),
+                      "deleted": dt.datetime.now().isoformat(timespec="seconds"), "staff": staff,
+                      "stage": track_info(m)["stage"], "reason": (request.form.get("reason") or "").strip()[:300]})
+        DELETED_LOG.write_text(json.dumps(dl[:500], indent=1))
+        shutil.rmtree(d, ignore_errors=True)
+    _ALERT_CACHE["at"] = 0
+    flash(f"🗑 Application for {m.get('applicant', '')} deleted.")
+    return redirect("/itin#progress")
 
 
 @bp.get("/itin/job/<job>/customer-copy.pdf")
@@ -1418,7 +1472,8 @@ In step 1, upload the signed W-7 scan if you have it. No engagement form is need
 <td><b>{{ti.stage_label}}</b>{% if ti.alert %}<br><span style="color:#b45309">⚠ {{ti.alert}}</span>{% endif %}</td>
 <td>{{ ti.posted.strftime('%d/%m/%Y') if ti.posted else '—' }}{% if ti.days is not none and not ti.closed %}<br><span class="muted">{{ti.days}} days ago</span>{% endif %}</td>
 <td>{% if x.track and x.track.outcome == 'itin' %}ITIN {{x.track.itin_number}}{% elif ti.expected %}{{ti.expected.strftime('%d/%m/%Y')}}{% else %}—{% endif %}</td>
-<td><a class="btn small secondary" href="/itin/job/{{x.job}}#track">Open</a></td></tr>{% endmacro %}
+<td style="white-space:nowrap"><a class="btn small secondary" href="/itin/job/{{x.job}}#track">Open</a>
+<a class="btn small secondary" href="/itin/job/{{x.job}}#delete" title="Delete" style="color:#b91c1c">🗑</a></td></tr>{% endmacro %}
 {% if not review %}<div class="card" id="progress"><h2>Applications in progress ({{open_jobs|length}})</h2>
 {% if open_jobs %}<table><tr><th>Applicant</th><th>Stage</th><th>Posted to IRS</th><th>IRS decision expected</th><th></th></tr>
 {% for x in open_jobs %}{{ jobrow(x) }}{% endfor %}</table>
@@ -1777,6 +1832,17 @@ function copyAddr(){ var v=document.getElementById('pm').value, el=document.getE
   navigator.clipboard.writeText(el.innerText).then(function(){document.getElementById('cpmsg').textContent='Copied'}) }
 showAddr();
 </script>
+<div class="card" id="delete" style="border:1px solid #fecaca"><details><summary style="cursor:pointer;font-weight:700;color:#b91c1c">🗑 Delete this application</summary>
+{% if delete_block %}<div class="bad" style="margin-top:10px">This application can't be deleted. {{delete_block}}</div>
+{% else %}<p class="muted">Deletes the application, its forms and every uploaded document for good, and switches off any KYC or signing link sent to the client. This can't be undone. A one-line record (name, date, who deleted it) is kept.</p>
+<form method="post" action="/itin/job/{{m.job}}/delete" onsubmit="return confirm('Delete the application for {{m.applicant|e}} and all its documents? This cannot be undone.')">
+<div class="fgrid">
+<div><label>Type the applicant's name to confirm: <b>{{m.applicant}}</b></label><input type="text" name="confirm_name" autocomplete="off" required></div>
+<div><label>Delete password</label><input type="password" name="pw" autocomplete="off" required></div>
+<div><label>Reason (optional)</label><input type="text" name="reason" placeholder="e.g. duplicate, client cancelled"></div></div>
+<button class="btn" type="submit" style="background:#b91c1c;border-color:#b91c1c;margin-top:10px">Delete application</button></form>{% endif %}
+</details></div>
+<script>if(location.hash=='#delete'){var dd=document.querySelector('#delete details'); if(dd) dd.open=true}</script>
 {% endblock %}"""
 
 
