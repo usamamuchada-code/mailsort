@@ -330,11 +330,46 @@ COA_ROWS = {
 }
 
 
+W7_DATE_ROWS = {"applicant": 670.0, "rp": 718.0}     # baseline of the printed "  /  /  " date boxes on W-7 page 1
+
+
+def stamp_w7_dates(pdf: bytes, a: dict) -> bytes:
+    """Type the signing dates into the W-7 date boxes (they are printed '/ /' with no form field).
+    Applicant = 'Sign Here' date, rp = Acceptance Agent box date. Blank dates are left to be written by hand."""
+    import pymupdf
+    sd = a.get("sign_dates") or {}
+    if not any(_d(sd.get(k)) for k in W7_DATE_ROWS):
+        return pdf
+    doc = pymupdf.open(stream=pdf, filetype="pdf")
+    pg = doc[0]
+    for k, y in W7_DATE_ROWS.items():
+        dd = _d(sd.get(k))
+        if dd:
+            for x, txt in ((341.5, f"{dd.month:02d}"), (367.0, f"{dd.day:02d}"), (388.5, f"{dd.year}")):
+                pg.insert_text((x, y), txt, fontsize=9, fontname="helv", color=(0, 0, 0.55))
+    buf = io.BytesIO()
+    doc.save(buf, garbage=3, deflate=True)
+    return buf.getvalue()
+
+
+def regen_forms(d: Path, m: dict):
+    """Rebuild the stored W-7 and COA PDFs from the application data (e.g. after signing dates are entered)."""
+    caa = load_caa()
+    a = m["a"]
+    for x in m.get("files", []):
+        if x.get("kind"):
+            continue
+        if x["file"].startswith("W-7-COA_"):
+            (d / x["file"]).write_bytes(fill_irs(TPL_DIR / "fw7coa.pdf", coa_values(a, caa), keep_pages=1))
+        elif x["file"].startswith("W-7_"):
+            (d / x["file"]).write_bytes(stamp_w7_dates(fill_irs(TPL_DIR / "fw7.pdf", w7_values(a, caa), overlays=w7_overlays(a)), a))
+
+
 def coa_values(a: dict, caa: dict) -> dict:
     v = {"theUndersigned[0]": caa["responsible_party"], "businessName[0]": caa["company"],
          "applicantsName[0]": " ".join(x for x in (a["first"], a["middle"], a["last"]) if x),
          "acceptanceAgentEIN[0]": caa["ein"], "agentCode[0]": caa["office_code"], "agentPTIN[0]": caa["ptin"],
-         "signatureResponsibleParty[0]": "", "dateResponsibleParty[0]": ""}
+         "signatureResponsibleParty[0]": "", "dateResponsibleParty[0]": (_d((a.get("sign_dates") or {}).get("rp")) or "") and _d(a["sign_dates"]["rp"]).strftime("%m/%d/%Y")}
     try:
         ad = dt.date.fromisoformat(caa.get("agreement_date") or "")
         v.update({"datedMonth[0]": f"{ad.month:02d}", "datedDay[0]": f"{ad.day:02d}", "datedYear[0]": f"{ad.year % 100:02d}"})
@@ -409,7 +444,7 @@ def customer_copy_pdf(a: dict, caa: dict) -> bytes:
         hide += ["f1_13[0]", "f1_14[0]"]
     for k in hide:
         v[k] = ""
-    doc = pymupdf.open(stream=fill_irs(TPL_DIR / "fw7.pdf", v, overlays=w7_overlays(a)), filetype="pdf")
+    doc = pymupdf.open(stream=stamp_w7_dates(fill_irs(TPL_DIR / "fw7.pdf", v, overlays=w7_overlays(a)), a), filetype="pdf")
     page = doc[0]
     rects = [(w.rect, w.field_name) for w in page.widgets() if any(w.field_name.endswith("." + k) for k in hide)]
     office = OUR_CHOICES[a["mail_choice"]][2] if a.get("mail_choice") in OUR_CHOICES else ""
@@ -853,6 +888,8 @@ def itin_manual(job):
         m = json.loads((d / "job.json").read_text())
         m["staff"] = m.get("staff") or session.get("user") or "admin"
         apply_manual(m, man)
+        m["a"]["sign_dates"] = {"applicant": man.get("applicant_date", ""), "rp": man.get("rp_date", "")}
+        regen_forms(d, m)
         (d / "job.json").write_text(json.dumps(m, indent=1))
     _ALERT_CACHE["at"] = 0
     flash("✍️ Manual filing recorded – " + track_info(m)["stage_label"] + ".")
@@ -908,6 +945,7 @@ def itin_generate():
     man = manual_from_form(request.form, errs)
     if man:
         a["manual"] = man
+        a["sign_dates"] = {"applicant": man.get("applicant_date", ""), "rp": man.get("rp_date", "")}
     caa = load_caa()
     if not caa.get("responsible_party") or not caa.get("ein") or not caa.get("office_code"):
         errs.append("Fill in and save our Acceptance Agent details first (responsible party, EIN, office code).")
@@ -940,7 +978,7 @@ def itin_generate():
             else:
                 (d / x["file"]).unlink(missing_ok=True)   # old W-7 / COA are recreated below
     try:
-        (d / f"W-7_{tag}.pdf").write_bytes(fill_irs(TPL_DIR / "fw7.pdf", w7_values(a, caa), overlays=w7_overlays(a)))
+        (d / f"W-7_{tag}.pdf").write_bytes(stamp_w7_dates(fill_irs(TPL_DIR / "fw7.pdf", w7_values(a, caa), overlays=w7_overlays(a)), a))
         files.append({"file": f"W-7_{tag}.pdf", "label": "Form W-7 – Application for ITIN"})
         (d / f"W-7-COA_{tag}.pdf").write_bytes(fill_irs(TPL_DIR / "fw7coa.pdf", coa_values(a, caa), keep_pages=1))
         files.append({"file": f"W-7-COA_{tag}.pdf", "label": "Form W-7-COA – Certificate of Accuracy"})
@@ -1077,8 +1115,19 @@ def itin_track(job):
             hist.append({"when": dt.datetime.now().isoformat(timespec="seconds"), "stage": after,
                          "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin")})
         m["history"] = hist
+        new_sd = {"applicant": t["applicant_signed_date"] if t["applicant_signed"] else "",
+                  "rp": t["rp_signed_date"] if t["rp_signed"] else ""}
+        dates_changed = new_sd != (m["a"].get("sign_dates") or {"applicant": "", "rp": ""})
+        if dates_changed:
+            m["a"]["sign_dates"] = new_sd
+            try:
+                regen_forms(d, m)
+            except Exception as ex:
+                errs.append(f"Signing dates saved, but the forms could not be updated: {ex}")
         (d / "job.json").write_text(json.dumps(m, indent=1))
     _ALERT_CACHE["at"] = 0
+    if dates_changed and not errs:
+        flash("W-7 and Certificate of Accuracy updated with the signing dates.")
     for e in errs:
         flash("⚠ " + e)
     if not errs:
