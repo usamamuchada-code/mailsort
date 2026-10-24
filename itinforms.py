@@ -37,7 +37,9 @@ CAA_DEFAULT = {"responsible_party": "Moaz Ali Siddiqui", "name_title": "Moaz Ali
                "company": "Startitup Global Inc", "ein": "42-2709229", "ptin": "P03481333", "ptin_expiry": "2026-12-31",
                "office_code": "00000001", "agreement_date": "2026-09-29", "phone": "406-605-9190", "fax": "806-615-2858",
                "notify_email": "accounting@startitup.global",
-               "our_mail_1": "c/o Startitup Global Inc, 5904 Jessamine St, Ste A15", "our_mail_2": "Houston, TX 77081, USA"}
+               "our_mail_1": "c/o Startitup Global Inc, 5904 Jessamine St, Ste A15", "our_mail_2": "Houston, TX 77081, USA",
+               "london_mail_1": "c/o Startitup Global, Unit 30, Albany Court, 18 Plumbers Row",
+               "london_mail_2": "London E1 5NF, United Kingdom"}
 # Source: CAA agreement Sec. 3.02 (EIN 422709229), AA approval letter 5614C (07 Oct 2026, responsible party),
 # PTIN confirmation (Moaz Siddiqui P03481333). Office code 00000001 (Active, effective 29/09/2026) from the AA
 # Application Summary on the Registered User Portal (tracking 20260729144741339273, Customer ID 15331555).
@@ -403,20 +405,24 @@ def customer_copy_pdf(a: dict, caa: dict) -> bytes:
     import pymupdf
     v = w7_values(a, caa)
     hide = list(AGENT_FIELDS)
-    if a.get("mail_choice") == "ours":           # line 2 is our office address – withhold it too
+    if a.get("mail_choice") in OUR_CHOICES:      # line 2 is one of our office addresses – withhold it too
         hide += ["f1_13[0]", "f1_14[0]"]
     for k in hide:
         v[k] = ""
     doc = pymupdf.open(stream=fill_irs(TPL_DIR / "fw7.pdf", v, overlays=w7_overlays(a)), filetype="pdf")
     page = doc[0]
-    rects = [w.rect for w in page.widgets() if any(w.field_name.endswith("." + k) for k in hide)]
+    rects = [(w.rect, w.field_name) for w in page.widgets() if any(w.field_name.endswith("." + k) for k in hide)]
+    office = OUR_CHOICES[a["mail_choice"]][2] if a.get("mail_choice") in OUR_CHOICES else ""
     try:
         doc.bake()                               # form fields -> plain page content (not editable)
     except Exception:
         pass
-    for r in rects:                              # grey "withheld" boxes over our details
+    for r, fn in rects:                          # grey "withheld" boxes over our details
         page.draw_rect(r, color=(0.55, 0.55, 0.55), fill=(0.86, 0.86, 0.86), width=0.4, overlay=True)
-        page.insert_textbox(r, "WITHHELD", fontsize=6, fontname="helv", color=(0.35, 0.35, 0.35), align=1)
+        txt = ("c/o Startitup Global - " + office + " (address withheld)" if fn.endswith("f1_13[0]") else
+               "Address withheld" if fn.endswith("f1_14[0]") else "WITHHELD")
+        page.insert_textbox(r, txt, fontsize=6.5 if office and fn.endswith(("f1_13[0]", "f1_14[0]")) else 6,
+                            fontname="helv", color=(0.3, 0.3, 0.3), align=1)
     for pg in doc:
         W, H = pg.rect.width, pg.rect.height
         for y in (H * 0.40, H * 0.74):
@@ -693,20 +699,35 @@ TEXT_KEYS = ("app_type", "rel_relationship", "us_person_name", "us_person_tin", 
              "delegate_rel", "client_ref")
 
 
-def use_our_mail(a: dict, caa: dict | None = None) -> dict:
+OUR_CHOICES = {"ours": ("our_mail_1", "our_mail_2", "Houston office"),
+               "london": ("london_mail_1", "london_mail_2", "London office")}
+
+
+def client_address(a: dict) -> str:
+    """Address shown to the CLIENT (engagement form, signing page). Our office address is never shown –
+    the client's home address is shown, with a note that IRS letters come c/o our office."""
+    if a.get("mail_choice") in OUR_CHOICES:
+        home = ", ".join(x for x in (a.get("foreign_1"), a.get("foreign_2")) if x)
+        return f"{home} (IRS letters c/o Startitup Global – {OUR_CHOICES[a['mail_choice']][2]})"
+    return ", ".join(x for x in (a.get("mail_1"), a.get("mail_2")) if x)
+
+
+def use_our_mail(a: dict, caa: dict | None = None, which: str = "ours") -> dict:
     """Line 2 = our office (c/o Startitup). Line 3 must then hold the client's full foreign street address
     (IRS W-7 instructions, line 3 caution: no c/o address on line 2 if line 3 is just a country)."""
     caa = caa or load_caa()
-    a["mail_choice"] = "ours"
-    a["mail_1"], a["mail_2"] = caa.get("our_mail_1", ""), caa.get("our_mail_2", "")
+    which = which if which in OUR_CHOICES else "ours"
+    k1, k2, _lbl = OUR_CHOICES[which]
+    a["mail_choice"] = which
+    a["mail_1"], a["mail_2"] = caa.get(k1, ""), caa.get(k2, "")
     return a
 
 
 def applicant_from_form(f) -> tuple[dict, list[str]]:
     a = {k: (f.get(k) or "").strip() for k in TEXT_KEYS}
-    a["mail_choice"] = "ours" if f.get("mail_choice") == "ours" else "client"
-    if a["mail_choice"] == "ours":
-        use_our_mail(a)
+    a["mail_choice"] = f.get("mail_choice") if f.get("mail_choice") in OUR_CHOICES else "client"
+    if a["mail_choice"] in OUR_CHOICES:
+        use_our_mail(a, which=a["mail_choice"])
     a["reasons"] = [r for r in REASONS if f.get(f"reason_{r}")]
     a["coa_identity"] = [k for k in COA_ROWS if f.get(f"coa_id_{k}")]
     a["coa_foreign"] = [k for k, row in COA_ROWS.items() if row[2] and f.get(f"coa_fs_{k}")]
@@ -728,9 +749,9 @@ def applicant_from_form(f) -> tuple[dict, list[str]]:
     if not a["first"] or not a["last"]:
         e.append("Line 1a: first name and last name are required.")
     if not a["mail_1"] or not a["mail_2"]:
-        e.append("Line 2: both lines of the mailing address are required." if a["mail_choice"] != "ours" else
+        e.append("Line 2: both lines of the mailing address are required." if a["mail_choice"] not in OUR_CHOICES else
                  "Line 2: our mailing address is not set – fill it in under \"Our Acceptance Agent details\" and press Save.")
-    if a["mail_choice"] == "ours" and not (a["foreign_1"] and a["foreign_2"]):
+    if a["mail_choice"] in OUR_CHOICES and not (a["foreign_1"] and a["foreign_2"]):
         e.append("Line 3: when the IRS letters go to our address, enter the client's full foreign home address "
                  "(street and city/country) on line 3 – otherwise the IRS may reject the application.")
     if not a["dob"]:
@@ -1196,6 +1217,8 @@ The tracker ticks client consent (and the signatures, if you enter their dates) 
  <div><label>Email us when a client submits KYC</label><input type="text" name="notify_email" value="{{caa.notify_email}}"></div>
  <div><label>Our mailing address for W-7 line 2 – street</label><input type="text" name="our_mail_1" value="{{caa.our_mail_1}}"></div>
  <div><label>Our mailing address for W-7 line 2 – city, state, ZIP, country</label><input type="text" name="our_mail_2" value="{{caa.our_mail_2}}"></div>
+ <div><label>Our London address for W-7 line 2 – street</label><input type="text" name="london_mail_1" value="{{caa.london_mail_1}}"></div>
+ <div><label>Our London address for W-7 line 2 – city, postcode, country</label><input type="text" name="london_mail_2" value="{{caa.london_mail_2}}"></div>
 </div><div style="margin-top:12px"><button class="btn" type="submit">Save Acceptance Agent details</button></div></form></details></div>
 
 {% if not review %}<div class="card" id="engagement"><details><summary style="cursor:pointer;font-weight:700;font-size:16px">Client engagement form wording (signed online by clients)</summary>
@@ -1262,8 +1285,9 @@ and prints "Never entered the U.S." when there is no entry date. <a href="/itin/
 <div><label>Last name</label><input type="text" name="birth_last" value="{{p.birth_last}}"></div></div></details>
 
 <span class="ln">2 Mailing address (where the IRS sends the ITIN letter)</span>
-<div class="radios" style="margin:4px 0 6px"><label><input type="radio" name="mail_choice" value="client" id="mc_client" {% if p.mail_choice != 'ours' %}checked{% endif %} onchange="mailChoice()"> Customer's own mailing address</label>
-<label><input type="radio" name="mail_choice" value="ours" id="mc_ours" {% if p.mail_choice == 'ours' %}checked{% endif %} onchange="mailChoice()"> Our address ({{ caa.our_mail_1 if caa else '' }}, {{ caa.our_mail_2 if caa else '' }})</label></div>
+<div class="radios" style="margin:4px 0 6px"><label><input type="radio" name="mail_choice" value="client" id="mc_client" {% if p.mail_choice not in ('ours', 'london') %}checked{% endif %} onchange="mailChoice()"> Customer's own mailing address</label>
+<label><input type="radio" name="mail_choice" value="london" id="mc_london" {% if p.mail_choice == 'london' %}checked{% endif %} onchange="mailChoice()"> Our London office ({{ caa.london_mail_1 if caa else '' }}, {{ caa.london_mail_2 if caa else '' }})</label>
+<label><input type="radio" name="mail_choice" value="ours" id="mc_ours" {% if p.mail_choice == 'ours' %}checked{% endif %} onchange="mailChoice()"> Our Houston office ({{ caa.our_mail_1 if caa else '' }}, {{ caa.our_mail_2 if caa else '' }})</label></div>
 <div class="fgrid"><div><label>Street address, apartment number</label><input type="text" name="mail_1" id="mail_1" value="{{p.mail_1}}"></div>
 <div><label>City, state/province, country and postcode</label><input type="text" name="mail_2" id="mail_2" value="{{p.mail_2}}"></div></div>
 <div class="warn" id="ours_note" style="display:none;margin-top:6px">IRS letters (ITIN notice, returned documents) will come to our office. <b>Line 3 must have the client's full foreign home address</b> – street and city/country, not just the country – or the IRS may reject it.</div>
@@ -1399,15 +1423,18 @@ function docRules(){   // mirrors doc_rules() in itinforms.py
     other: ['opt','']
   };
 }
-var OUR_MAIL = [{{ (caa.our_mail_1 if caa else '')|tojson }}, {{ (caa.our_mail_2 if caa else '')|tojson }}], _clientMail = null;
+var OUR_ADDR = {ours: [{{ (caa.our_mail_1 if caa else '')|tojson }}, {{ (caa.our_mail_2 if caa else '')|tojson }}],
+                london: [{{ (caa.london_mail_1 if caa else '')|tojson }}, {{ (caa.london_mail_2 if caa else '')|tojson }}]}, _clientMail = null;
+function isOurs(v){ return v == OUR_ADDR.ours[0] || v == OUR_ADDR.london[0] }
+function ourSel(){ return on('mc_london') ? 'london' : (on('mc_ours') ? 'ours' : '') }
 function mailChoice(){
-  var ours = on('mc_ours'), m1 = $('mail_1'), m2 = $('mail_2'), f1 = document.querySelector('[name=foreign_1]'), f2 = document.querySelector('[name=foreign_2]');
+  var sel = ourSel(), ours = !!sel, OUR_MAIL = ours ? OUR_ADDR[sel] : null, m1 = $('mail_1'), m2 = $('mail_2'), f1 = document.querySelector('[name=foreign_1]'), f2 = document.querySelector('[name=foreign_2]');
   if(!m1) return;
   if(ours){
-    if(m1.value && m1.value != OUR_MAIL[0]){ _clientMail = [m1.value, m2.value];
+    if(m1.value && !isOurs(m1.value)){ _clientMail = [m1.value, m2.value];
       if(!f1.value && !f2.value){ f1.value = m1.value; f2.value = m2.value } }   // client's address moves to line 3
     m1.value = OUR_MAIL[0]; m2.value = OUR_MAIL[1];
-  } else if(m1.value == OUR_MAIL[0]){
+  } else if(isOurs(m1.value)){
     m1.value = _clientMail ? _clientMail[0] : ''; m2.value = _clientMail ? _clientMail[1] : '';
   }
   m1.readOnly = m2.readOnly = ours; m1.style.background = m2.style.background = ours ? '#f1f5f9' : '';
@@ -1464,7 +1491,7 @@ function readDoc(k){
       if(d.expiry_date && d.expiry_date < new Date().toISOString().slice(0,10)) w.push('⚠ This document is EXPIRED ('+esc(d.expiry_date)+') – the IRS only accepts current documents.');
       if(k=='passport' && !d.birth_country) w.push('Country of birth is not printed – ask the client and type it in.');
     } else if(r.kind=='address'){
-      if(d.address_line1){ if(on('mc_ours')){ document.querySelector('[name=foreign_1]').value = d.address_line1; document.querySelector('[name=foreign_2]').value = d.address_line2||''; ok.push('line 3 address') }
+      if(d.address_line1){ if(ourSel()){ document.querySelector('[name=foreign_1]').value = d.address_line1; document.querySelector('[name=foreign_2]').value = d.address_line2||''; ok.push('line 3 address') }
         else { document.querySelector('[name=mail_1]').value = d.address_line1; document.querySelector('[name=mail_2]').value = d.address_line2||''; ok.push('line 2 address') } }
       var nm = ($('last').value||'').toUpperCase();
       if(nm && d.name_on_document && d.name_on_document.toUpperCase().indexOf(nm) < 0) w.push('Name on the document ("'+esc(d.name_on_document)+'") does not match the applicant – check it is the applicant\'s address.');
@@ -1989,7 +2016,7 @@ def engagement_pdf(m: dict, eng: dict, fee: str, signed: dict | None = None) -> 
         if bullets:
             body.append("<ul>" + "".join(f"<li>{H.escape(b)}</li>" for b in bullets) + "</ul>")
     rows = [("Applicant", name), ("Date of birth", a.get("dob") and dt.date.fromisoformat(a["dob"]).strftime("%d/%m/%Y") or ""),
-            ("Passport / ID number", a.get("id_number", "")), ("Address", ", ".join(x for x in (a.get("mail_1"), a.get("mail_2")) if x)),
+            ("Passport / ID number", a.get("id_number", "")), ("Address", client_address(a)),
             ("Phone", (signed or {}).get("phone") or a.get("phone", "")), ("Email", (signed or {}).get("email", "")),
             ("Our reference", a.get("client_ref") or m["job"])]
     tbl = "".join(f"<tr><td class='k'>{H.escape(k)}</td><td>{H.escape(v or '')}</td></tr>" for k, v in rows)
@@ -2090,7 +2117,7 @@ def sign_page(token):
     eng = load_engage()
     return render_template_string(SIGN_PAGE, m=m, a=m["a"], e=e, eng=eng, token=token, decl=DECLARATIONS,
                                   terms=eng["terms"].replace("{fee}", e.get("fee") or "as agreed with us in writing"),
-                                  masked=_mask(m["a"].get("id_number", "")), err="")
+                                  masked=_mask(m["a"].get("id_number", "")), err="", client_addr=client_address(m["a"]))
 
 
 @bp.post("/sign/itin/<token>")
@@ -2113,7 +2140,7 @@ def sign_submit(token):
     if errs:
         return render_template_string(SIGN_PAGE, m=m, a=m["a"], e=e, eng=eng, token=token, decl=DECLARATIONS,
                                       terms=eng["terms"].replace("{fee}", e.get("fee") or "as agreed with us in writing"),
-                                      masked=_mask(m["a"].get("id_number", "")), err=" ".join(errs), form=f)
+                                      masked=_mask(m["a"].get("id_number", "")), err=" ".join(errs), form=f, client_addr=client_address(m["a"]))
     now = dt.datetime.now(dt.timezone.utc)
     signed = {"typed_name": typed, "email": (f.get("email") or "").strip()[:120], "phone": (f.get("phone") or "").strip()[:40],
               "when_utc": now.strftime("%Y-%m-%d %H:%M:%S"), "when_local": now.strftime("%d/%m/%Y"),
@@ -2185,7 +2212,7 @@ canvas{width:100%;height:180px;border:2px dashed #94a3b8;border-radius:10px;back
 <tr><td class="k">Name</td><td>{{ [a.first, a.middle, a.last]|select|join(' ') }}</td></tr>
 <tr><td class="k">Date of birth</td><td>{{ a.dob|ukdate if a.dob else '' }}</td></tr>
 <tr><td class="k">Passport / ID number</td><td>{{masked}}</td></tr>
-<tr><td class="k">Address</td><td>{{ [a.mail_1, a.mail_2]|select|join(', ') }}</td></tr>
+<tr><td class="k">Address</td><td>{{client_addr}}</td></tr>
 <tr><td class="k">Fee</td><td><b>{{e.fee}}</b></td></tr></table>
 <p class="muted">Something wrong? Don't sign – reply to the message we sent you and we'll correct it.</p></div>
 <form method="post" id="sf" onsubmit="return go()">
@@ -2293,8 +2320,8 @@ def answers_to_a(ans: dict, a: dict, kinds: set) -> dict:
     a["mail_1"], a["mail_2"] = (g("mail_1"), g("mail_2")) if ans.get("mail_diff") else (g("home_1"), g("home_2"))
     a["foreign_1"], a["foreign_2"] = (g("home_1"), g("home_2")) if ans.get("mail_diff") else ("", "")
     a["mail_choice"] = "client"
-    if ans.get("mail_ours"):                      # client asked for letters to come to our office
-        use_our_mail(a)
+    if ans.get("mail_ours") or ans.get("mail_london"):   # client asked for letters to come to one of our offices
+        use_our_mail(a, which="london" if ans.get("mail_london") else "ours")
         a["foreign_1"], a["foreign_2"] = g("home_1"), g("home_2")
     boxes = []
     for key, _t, box in KYC_REASONS:
@@ -2368,7 +2395,7 @@ def kyc_ai(job: str):
             elif ai_kind == "identity":
                 pass
             elif ai_kind == "address":
-                ak = "foreign" if a.get("mail_choice") == "ours" else "mail"   # our office on line 2 -> compare line 3
+                ak = "foreign" if a.get("mail_choice") in OUR_CHOICES else "mail"   # our office on line 2 -> compare line 3
                 if not a.get(f"{ak}_1") and r.get("address_line1"):
                     a[f"{ak}_1"], a[f"{ak}_2"] = r["address_line1"], r.get("address_line2", "")
                     filled.append("address")
@@ -2544,6 +2571,7 @@ def _kyc_render(m, token, err="", saved=False):
                                   reasons=KYC_REASONS, docs=KYC_DOCS, up=uploaded_kinds(m), decl=DECLARATIONS, eng=eng,
                                   fee=fee, terms=eng["terms"].replace("{fee}", fee or "as agreed with us in writing"),
                                   our_mail=", ".join(x for x in (load_caa().get("our_mail_1", "").replace("c/o ", ""), load_caa().get("our_mail_2", "")) if x),
+                                  london_mail=", ".join(x for x in (load_caa().get("london_mail_1", "").replace("c/o ", ""), load_caa().get("london_mail_2", "")) if x),
                                   expired=bool(_d(k.get("expires")) and _d(k["expires"]) < dt.date.today()))
 
 
@@ -2566,8 +2594,10 @@ def kyc_submit(token):
     for key, _t, _b in KYC_REASONS:
         ans[f"reason_{key}"] = bool(f.get(f"reason_{key}"))
     ans["mail_diff"], ans["no_passport"] = bool(f.get("mail_diff")), bool(f.get("no_passport"))
-    ans["mail_ours"] = bool(f.get("mail_ours"))
-    if ans["mail_ours"]:
+    ans["mail_ours"], ans["mail_london"] = bool(f.get("mail_ours")), bool(f.get("mail_london"))
+    if ans["mail_london"]:
+        ans["mail_ours"] = False
+    if ans["mail_ours"] or ans["mail_london"]:
         ans["mail_diff"] = False
     with _LOCK:
         m = json.loads((d / "job.json").read_text())
@@ -2714,8 +2744,9 @@ canvas{width:100%;height:170px;border:2px dashed #94a3b8;border-radius:10px;back
 <div class="card"><h2><span class="step">2</span>Your home address</h2><p class="muted" style="margin:0">Where you normally live – your full street address. The IRS posts your ITIN letter here unless you choose another address below.</p>
 <label class="req">House / flat number and street</label><input type="text" name="home_1" value="{{ans.home_1}}" autocomplete="address-line1">
 <label class="req">Town / city, state or province, postcode and country</label><input type="text" name="home_2" value="{{ans.home_2}}" placeholder="Karachi, Sindh 75600, Pakistan">
-<label class="c"><input type="checkbox" name="mail_ours" value="1" id="mail_ours" {% if ans.mail_ours %}checked{% endif %} onchange="if(this.checked)$('mail_diff').checked=false"> Send my IRS letters to Startitup Global's US office ({{our_mail}}) – we scan and email them to you</label>
-<label class="c"><input type="checkbox" name="mail_diff" value="1" id="mail_diff" {% if ans.mail_diff %}checked{% endif %} onchange="if(this.checked)$('mail_ours').checked=false"> Send my IRS letters to a different address of my own</label>
+<label class="c"><input type="checkbox" name="mail_ours" value="1" id="mail_ours" {% if ans.mail_ours %}checked{% endif %} onchange="if(this.checked){$('mail_diff').checked=false;$('mail_london').checked=false}"> Send my IRS letters to Startitup Global's US office – we scan and email them to you</label>
+<label class="c"><input type="checkbox" name="mail_london" value="1" id="mail_london" {% if ans.mail_london %}checked{% endif %} onchange="if(this.checked){$('mail_diff').checked=false;$('mail_ours').checked=false}"> Send my IRS letters to Startitup Global's London office – we scan and email them to you</label>
+<label class="c"><input type="checkbox" name="mail_diff" value="1" id="mail_diff" {% if ans.mail_diff %}checked{% endif %} onchange="if(this.checked){$('mail_ours').checked=false;$('mail_london').checked=false}"> Send my IRS letters to a different address of my own</label>
 <div id="x_mail" class="sub hide"><label>Street address</label><input type="text" name="mail_1" value="{{ans.mail_1}}">
 <label>Town / city, state or province, postcode and country</label><input type="text" name="mail_2" value="{{ans.mail_2}}">
 <p class="muted">Use your own address – not a company "care of" address or a private mailbox.</p></div></div>
