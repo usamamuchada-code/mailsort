@@ -351,7 +351,7 @@ def fill_irs(template: Path, values: dict, keep_pages: int | None = None, overla
     doc = pymupdf.open(template)
     if keep_pages:
         doc.select(list(range(keep_pages)))
-    used = set()
+    used, ticks = set(), []
     for page in doc:
         for w in page.widgets():
             key = next((k for k in values if w.field_name == k or w.field_name.endswith("." + k)), None)
@@ -359,7 +359,10 @@ def fill_irs(template: Path, values: dict, keep_pages: int | None = None, overla
                 continue
             v = values[key]
             if w.field_type in (pymupdf.PDF_WIDGET_TYPE_CHECKBOX, pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON):
-                w.field_value = w.on_state() if v else "Off"
+                # draw our own tick (vector lines) – some PDF viewers show the form's font glyph as a star
+                w.field_value = "Off"
+                if v:
+                    ticks.append((page.number, w.rect))
             else:
                 v = "" if v is None else str(v)
                 if w.text_maxlen and len(v) > w.text_maxlen:
@@ -372,6 +375,12 @@ def fill_irs(template: Path, values: dict, keep_pages: int | None = None, overla
     missing = set(values) - used
     if missing:
         raise RuntimeError(f"{template.name} has changed – fields not found: {', '.join(sorted(missing)[:8])}")
+    for pno, r in ticks:
+        pg = doc[pno]
+        s_ = min(r.width, r.height)
+        x, y = r.x0 + (r.width - s_) / 2, r.y0 + (r.height - s_) / 2
+        pg.draw_polyline([(x + s_ * .18, y + s_ * .55), (x + s_ * .42, y + s_ * .80), (x + s_ * .85, y + s_ * .18)],
+                         color=(0, 0, 0), width=max(0.9, s_ * .13), overlay=True)
     for key, text in overlays or []:
         for page in doc:
             for w in page.widgets():
@@ -485,6 +494,8 @@ def doc_rules(a: dict) -> dict:
         "address": ("opt", "Saves typing the address"),
         "visa": ("cond", "Boxes f and g need the US visa") if r & {"f", "g"} else ("opt", ""),
         "tax_return": (("na", "Exception claimed in box h instead") if "h" in r else
+                       ("opt", "Not needed for a first-time (new) application – add it if there is one")
+                       if ret and a.get("app_type") != "renew" else
                        ("cond", "Boxes b–g need the tax return") if ret else ("opt", "")),
         "exception": ("cond", "Box h – the IRS needs proof of the exception") if "h" in r else ("na", ""),
         "us_person": ("opt", "Fills the US person's name and number") if r & {"d", "e"} else ("na", ""),
@@ -567,6 +578,8 @@ def support_doc(a: dict) -> str:
     if "h" in r:
         return f"Documents supporting the exception claimed ({a.get('reason_h_text') or 'box h'})"
     if r & {"b", "c", "d", "e", "f", "g"}:
+        if a.get("app_type") != "renew":
+            return "The applicant's U.S. federal tax return, if there is one (W-7 on top, return behind it)"
         return "The applicant's U.S. federal tax return (W-7 goes on top, return attached behind it)"
     return "Supporting documents for the reason ticked"
 
@@ -1376,7 +1389,7 @@ function docRules(){   // mirrors doc_rules() in itinforms.py
     other_id: ['opt', pp ? '' : 'Use as the second ID if needed'],
     address: ['opt','Saves typing the address'],
     visa: (r.f||r.g) ? ['cond','Boxes f and g need the US visa'] : ['opt',''],
-    tax_return: r.h ? ['na','Exception claimed in box h instead'] : (ret ? ['cond','Boxes b–g need the tax return'] : ['opt','']),
+    tax_return: r.h ? ['na','Exception claimed in box h instead'] : (ret ? (renew ? ['cond','Boxes b–g need the tax return'] : ['opt','Not needed for a first-time (new) application – add it if there is one']) : ['opt','']),
     exception: r.h ? ['cond','Box h – the IRS needs proof of the exception'] : ['na',''],
     us_person: (r.d||r.e) ? ['opt',"Fills the US person's name and number"] : ['na',''],
     residency: r.d ? ['cond','Box d – dependants must prove US residency'] : ['na',''],
