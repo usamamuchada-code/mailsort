@@ -527,7 +527,7 @@ def doc_rules(a: dict) -> dict:
     pp = (a.get("id_type") or "passport") == "passport"
     ret = r & set("bcdefg")
     out = {
-        "engagement": ("na", "Not needed – manual filing") if a.get("manual") else ("req", "Needed before we post"),
+        "engagement": ("opt", "Optional – our own form, not needed by the IRS"),
         "passport": ("req", "Proves identity and foreign status on its own") if pp else ("opt", ""),
         "national_id": ("opt", "") if pp else ("cond", "No passport – at least two IDs, one with a photo"),
         "birth_cert": ("cond", "Dependant without a passport") if (not pp and "d" in r) else ("opt", ""),
@@ -634,7 +634,7 @@ def expected_weeks(posted: dt.date) -> int:
 def track_info(meta: dict, today: dt.date | None = None) -> dict:
     today = today or dt.date.today()
     t = meta.get("track") or {}
-    signed = bool(t.get("consent") and t.get("applicant_signed") and t.get("rp_signed"))
+    signed = bool(t.get("applicant_signed") and t.get("rp_signed"))     # engagement / consent is optional
     posted = _d(t.get("posted_date")) if t.get("label_done") else None
     out = t.get("outcome") or ""
     st = meta.get("status") or ""
@@ -1084,10 +1084,10 @@ def itin_track(job):
                                    "applicant's signature"), ("rp_signed", "rp_signed_date", "responsible party's signature")):
             if t[flag] and not _d(t[date_k]):
                 errs.append(f"Enter the date of the {what}.")
-        signed = t["consent"] and t["applicant_signed"] and t["rp_signed"]
+        signed = t["applicant_signed"] and t["rp_signed"]
         if (t["label_done"] or t["posted_date"]) and not signed:
-            errs.append("Posting is blocked until the client consent, the applicant's ink signature and our responsible "
-                        "party's signature are all ticked.")
+            errs.append("Posting is blocked until the applicant's ink signature and our responsible "
+                        "party's signature are both ticked.")
             t["label_done"], t["posted_date"] = False, ""
         if t["posted_date"] and not t["label_done"]:
             errs.append("Tick \"Postage label generated\" before entering the posting date.")
@@ -1510,7 +1510,7 @@ function docRules(){   // mirrors doc_rules() in itinforms.py
   var at = document.querySelector('[name=app_type]:checked'), renew = at && at.value=='renew';
   var del = document.querySelector('[name=delegate_rel]').value;
   return {
-    engagement: on('manual_on') ? ['na','Not needed – manual filing'] : ['req','Needed before we post'],
+    engagement: ['opt','Optional – our own form, not needed by the IRS'],
     passport: pp ? ['req','Proves identity and foreign status on its own'] : ['opt',''],
     national_id: pp ? ['opt',''] : ['cond','No passport – at least two IDs, one with a photo'],
     birth_cert: (!pp && r.d) ? ['cond','Dependant without a passport'] : ['opt',''],
@@ -1759,7 +1759,7 @@ The signed PDF is saved here and section A "client consent" ticks itself. (This 
 or typed signatures, so a digital signature (or just the name typed in) gets the application suspended or rejected. Post or courier the printed
 W-7 to the client, they sign and date it in ink and send the original back; we post that original to the IRS. Moaz signs the Acceptance
 Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
-<label class="tick"><input type="checkbox" name="consent" value="1" {% if t.consent %}checked{% endif %}> Client has signed our ITIN application / engagement form, giving consent for Startitup Global Inc (Certifying Acceptance Agent) to prepare and submit their Form W-7 and to receive copies of their ITIN notices</label>
+<label class="tick"><input type="checkbox" name="consent" value="1" {% if t.consent %}checked{% endif %}> <span class="muted" style="font-weight:400">(optional)</span> Client has signed our ITIN application / engagement form, giving consent for Startitup Global Inc (Certifying Acceptance Agent) to prepare and submit their Form W-7 and to receive copies of their ITIN notices</label>
 <div class="sub"><label>Date client signed our application</label><input type="date" name="consent_date" value="{{t.consent_date}}"></div>
 <label class="tick"><input type="checkbox" name="applicant_signed" value="1" {% if t.applicant_signed %}checked{% endif %}> Applicant has signed and dated the W-7 by hand in ink – the ORIGINAL signed form is with us</label>
 <div class="sub"><label>Date applicant signed the W-7</label><input type="date" name="applicant_signed_date" value="{{t.applicant_signed_date}}"></div>
@@ -1768,7 +1768,7 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 </div>
 
 <div class="tsec"><h3>B. Post to the IRS <a class="muted" style="font-size:13px;font-weight:400" href="/itin/guide#post">guide</a></h3>
-<p class="muted" style="margin:2px 0 8px">The system will not accept posting until all three boxes in section A are ticked.</p>
+<p class="muted" style="margin:2px 0 8px">The system will not accept posting until both signatures in section A are ticked (the engagement form is optional).</p>
 <div class="fgrid"><div><label>Sending by</label><select name="post_method" id="pm" onchange="showAddr()">{% for k, v in addr.items() %}<option value="{{k}}" {% if (t.post_method or 'courier') == k %}selected{% endif %}>{{v[0]}}</option>{% endfor %}</select></div></div>
 {% for k, v in addr.items() %}<div class="addr" id="addr_{{k}}" style="display:none">{{ v[1]|join('<br>')|safe }}</div>{% endfor %}
 <div><button type="button" class="btn small secondary" onclick="copyAddr()">Copy address</button> <span class="muted" id="cpmsg"></span></div>
@@ -1981,7 +1981,7 @@ DocuSign-type signature will get the application suspended or rejected.</div>
 <li>Print the W-7 and send it to the client (courier or post). The client signs and dates the "Signature of applicant" box with a pen and posts the <b>original</b> back.</li>
 <li>Under 18: a parent or court-appointed guardian signs and is entered as Delegate. Someone else signing for an adult needs Form 2848 attached.</li>
 <li>{{caa.responsible_party or 'The responsible party'}} signs and dates the Acceptance Agent box on the W-7 and the COA.</li>
-<li>Tick the three boxes in <b>Tracker A</b> with the dates. Posting is blocked until all three are ticked.</li></ol>
+<li>Tick the signatures in <b>Tracker A</b> with the dates. Posting is blocked until the applicant's and the responsible party's signatures are ticked. Our engagement form is optional.</li></ol>
 <p><b>Manual filing</b> (KYC and signatures done offline, no link): on the ITIN page press <b>Start a manual application</b>, fill the W-7 as normal, upload the
 documents (no engagement form needed), and complete step 5 with the KYC and signing dates. Tracker A ticks itself from those dates.
 An existing application (e.g. a KYC link the client never finished) can be switched with <b>Switch to manual filing</b> on its page.</p>
