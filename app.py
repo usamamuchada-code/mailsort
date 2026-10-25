@@ -1985,6 +1985,13 @@ try:
 except Exception as _ex:  # never let the add-on stop the mail room from starting
     print(f"[itin] ITIN tab not loaded: {_ex}", flush=True)
 
+# ----------------------------------------------------------------------------- UK company formations tab (v39a, separate file)
+try:
+    import formations
+    formations.register(app, load_config)
+except Exception as _ex:  # never let the add-on stop the mail room from starting
+    print(f"[formations] Formations tab not loaded: {_ex}", flush=True)
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
