@@ -117,15 +117,22 @@ Return ONLY a JSON object with these keys:
  "surname": "", "given_names": "",            // exactly as printed, Latin letters
  "first_name": "", "middle_name": "",          // split given_names: first word = first_name, rest = middle_name
  "date_of_birth": "YYYY-MM-DD", "sex": "M" | "F" | "",
- "nationality": "",                            // country name in English, e.g. "Pakistan" (not the code)
- "place_of_birth": "",                         // as printed, e.g. "KARACHI, PAK" or "LONDON"
- "birth_city": "", "birth_country": "",        // split place_of_birth; birth_country in English ONLY if printed or
-                                               // the printed place is unambiguous (e.g. "KARACHI, PAK" -> "Pakistan")
+ "nationality": "",                            // SHORT country name in English, e.g. "Pakistan", "United Kingdom"
+                                               // (never the long official name, never the code)
+ "place_of_birth": "",                         // exactly as printed, e.g. "SIALKOT, PAK" or "LONDON"
+ "birth_city": "",                             // the town/city part of place_of_birth, e.g. "Sialkot" – fill it whenever
+                                               // a town or city is printed
+ "birth_country": "",                          // short English name, ONLY if printed or the place is unambiguous
+                                               // (e.g. "KARACHI, PAK" -> "Pakistan")
  "document_number": "", "issuing_country": "", // issuing country/authority in English
  "issue_date": "YYYY-MM-DD", "expiry_date": "YYYY-MM-DD",
  "address_line1": "", "address_line2": "",    // only if an address is printed (e.g. national ID card): street;
                                                // then city, state/province, country, postcode
- "mrz_checked": true | false, "notes": ""}"""
+ "mrz_line1": "", "mrz_line2": "", "mrz_line3": "",
+     // the machine-readable code lines at the bottom of the page, copied CHARACTER BY CHARACTER exactly as printed,
+     // including every '<' (a passport has 2 lines of 44 characters, an ID card 3 lines of 30). "" if not visible.
+ "notes": ""}
+Read the surname and date of birth very carefully from the printed page; the code lines are checked separately."""
 
 _JSON_RULE = "Read ONLY what is printed. Never guess. Unknown values are \"\". Dates as YYYY-MM-DD. Return ONLY one JSON object.\n"
 SCAN_PROMPTS = {
@@ -139,9 +146,24 @@ SCAN_PROMPTS = {
  "visa_number": "",                  // the visa foil number (red number) if shown
  "visa_expiry": "", "entry_date": "",// most recent date of entry into the United States, if shown
  "notes": ""}""",
-    "tax_return": _JSON_RULE + """This is a U.S. federal tax return (e.g. Form 1040-NR or 1040). Return:
-{"form": "", "tax_year": "", "names": [""],   // every taxpayer/spouse name as printed on the return
- "notes": ""}                                   // say if any signature or page seems missing""",
+    "tax_return": _JSON_RULE + """This is a U.S. federal tax return pack (e.g. Form 1040 or 1040-NR); it may also contain a
+completed Form W-7. Return:
+{"form": "", "tax_year": "", "filing_status": "",
+ "names": [""],                                  // every taxpayer/spouse/dependant name as printed on the return
+ "people": [{"name": "", "role": "taxpayer" | "spouse" | "dependent", "ssn_or_itin": ""}],
+                                                 // ssn_or_itin exactly as printed (123-45-6789), or "Applied for", or ""
+ "us_spouse_name": "", "us_spouse_ssn": "",      // the person on the return who HAS a real SSN/ITIN and is the spouse
+                                                 // of the ITIN applicant (the applicant's number is blank / "Applied for")
+ "w7_included": true | false,                    // true only if a completed Form W-7 is in these pages
+ "w7": {"applicant_name": "", "foreign_tax_id": "", "previous_itin": "", "previous_irsn": "", "phone": "",
+        "mail_line1": "", "mail_line2": "",          // W-7 line 2
+        "foreign_line1": "", "foreign_line2": ""},   // W-7 line 3
+ "notes": ""}                                    // say if any signature or page seems missing""",
+    "marriage": _JSON_RULE + """This is a marriage certificate. Return:
+{"spouse_1_name": "", "spouse_2_name": "",      // full names as printed
+ "marriage_date": "", "place": "", "issuing_authority": "",
+ "is_translation_needed": true | false,          // true if it is not in English
+ "notes": ""}""",
     "exception": _JSON_RULE + """This document supports an ITIN exception (bank letter, payer/withholding agent letter, partnership or LLC
 agreement, employment letter, mortgage or property sale papers, Form 8288). Return:
 {"document_type": "", "issuer": "", "name_of_applicant": "", "date": "",
@@ -180,17 +202,16 @@ def _norm_image(data: bytes) -> bytes:
     return buf.getvalue()
 
 
-def _to_images(data: bytes, filename: str) -> list[tuple[str, bytes]]:
-    """Return [(media_type, bytes)] – PDFs are rendered page by page (max 2 pages)."""
+def _to_images(data: bytes, filename: str, pages: list[int] | None = None) -> list[tuple[str, bytes]]:
+    """Return [(media_type, bytes)] – PDFs are rendered page by page (first 2 pages, or the pages asked for)."""
     name = (filename or "").lower()
     if name.endswith(".pdf") or data[:4] == b"%PDF":
         import pymupdf
         doc = pymupdf.open(stream=data, filetype="pdf")
         out = []
-        for i, page in enumerate(doc):
-            if i >= 2:
-                break
-            out.append(("image/png", page.get_pixmap(dpi=200).tobytes("png")))
+        for i in (pages if pages else range(min(2, len(doc)))):
+            if i < len(doc):
+                out.append(("image/png", doc[i].get_pixmap(dpi=200 if len(pages or []) <= 2 else 150).tobytes("png")))
         return out
     if not (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n"):
         try:
@@ -214,6 +235,270 @@ def _to_images(data: bytes, filename: str) -> list[tuple[str, bytes]]:
     return [(mt, data)]
 
 
+COUNTRY_ISO3 = {
+"AFG":"Afghanistan","ALB":"Albania","DZA":"Algeria","AND":"Andorra","AGO":"Angola","ATG":"Antigua and Barbuda","ARG":"Argentina",
+"ARM":"Armenia","AUS":"Australia","AUT":"Austria","AZE":"Azerbaijan","BHS":"Bahamas","BHR":"Bahrain","BGD":"Bangladesh","BRB":"Barbados",
+"BLR":"Belarus","BEL":"Belgium","BLZ":"Belize","BEN":"Benin","BTN":"Bhutan","BOL":"Bolivia","BIH":"Bosnia and Herzegovina","BWA":"Botswana",
+"BRA":"Brazil","BRN":"Brunei","BGR":"Bulgaria","BFA":"Burkina Faso","BDI":"Burundi","CPV":"Cape Verde","KHM":"Cambodia","CMR":"Cameroon",
+"CAN":"Canada","CAF":"Central African Republic","TCD":"Chad","CHL":"Chile","CHN":"China","COL":"Colombia","COM":"Comoros","COG":"Congo",
+"COD":"Democratic Republic of the Congo","CRI":"Costa Rica","CIV":"Ivory Coast","HRV":"Croatia","CUB":"Cuba","CYP":"Cyprus","CZE":"Czech Republic",
+"DNK":"Denmark","DJI":"Djibouti","DMA":"Dominica","DOM":"Dominican Republic","ECU":"Ecuador","EGY":"Egypt","SLV":"El Salvador",
+"GNQ":"Equatorial Guinea","ERI":"Eritrea","EST":"Estonia","SWZ":"Eswatini","ETH":"Ethiopia","FJI":"Fiji","FIN":"Finland","FRA":"France",
+"GAB":"Gabon","GMB":"Gambia","GEO":"Georgia","D":"Germany","DEU":"Germany","GHA":"Ghana","GRC":"Greece","GRD":"Grenada","GTM":"Guatemala",
+"GIN":"Guinea","GNB":"Guinea-Bissau","GUY":"Guyana","HTI":"Haiti","HND":"Honduras","HKG":"Hong Kong","HUN":"Hungary","ISL":"Iceland",
+"IND":"India","IDN":"Indonesia","IRN":"Iran","IRQ":"Iraq","IRL":"Ireland","ISR":"Israel","ITA":"Italy","JAM":"Jamaica","JPN":"Japan",
+"JOR":"Jordan","KAZ":"Kazakhstan","KEN":"Kenya","KIR":"Kiribati","PRK":"North Korea","KOR":"South Korea","RKS":"Kosovo","KWT":"Kuwait",
+"KGZ":"Kyrgyzstan","LAO":"Laos","LVA":"Latvia","LBN":"Lebanon","LSO":"Lesotho","LBR":"Liberia","LBY":"Libya","LIE":"Liechtenstein",
+"LTU":"Lithuania","LUX":"Luxembourg","MAC":"Macao","MDG":"Madagascar","MWI":"Malawi","MYS":"Malaysia","MDV":"Maldives","MLI":"Mali",
+"MLT":"Malta","MHL":"Marshall Islands","MRT":"Mauritania","MUS":"Mauritius","MEX":"Mexico","FSM":"Micronesia","MDA":"Moldova","MCO":"Monaco",
+"MNG":"Mongolia","MNE":"Montenegro","MAR":"Morocco","MOZ":"Mozambique","MMR":"Myanmar","NAM":"Namibia","NRU":"Nauru","NPL":"Nepal",
+"NLD":"Netherlands","NZL":"New Zealand","NIC":"Nicaragua","NER":"Niger","NGA":"Nigeria","MKD":"North Macedonia","NOR":"Norway","OMN":"Oman",
+"PAK":"Pakistan","PLW":"Palau","PSE":"Palestine","PAN":"Panama","PNG":"Papua New Guinea","PRY":"Paraguay","PER":"Peru","PHL":"Philippines",
+"POL":"Poland","PRT":"Portugal","QAT":"Qatar","ROU":"Romania","RUS":"Russia","RWA":"Rwanda","KNA":"Saint Kitts and Nevis","LCA":"Saint Lucia",
+"VCT":"Saint Vincent and the Grenadines","WSM":"Samoa","SMR":"San Marino","STP":"Sao Tome and Principe","SAU":"Saudi Arabia","SEN":"Senegal",
+"SRB":"Serbia","SYC":"Seychelles","SLE":"Sierra Leone","SGP":"Singapore","SVK":"Slovakia","SVN":"Slovenia","SLB":"Solomon Islands",
+"SOM":"Somalia","ZAF":"South Africa","SSD":"South Sudan","ESP":"Spain","LKA":"Sri Lanka","SDN":"Sudan","SUR":"Suriname","SWE":"Sweden",
+"CHE":"Switzerland","SYR":"Syria","TWN":"Taiwan","TJK":"Tajikistan","TZA":"Tanzania","THA":"Thailand","TLS":"Timor-Leste","TGO":"Togo",
+"TON":"Tonga","TTO":"Trinidad and Tobago","TUN":"Tunisia","TUR":"Turkey","TKM":"Turkmenistan","TUV":"Tuvalu","UGA":"Uganda","UKR":"Ukraine",
+"ARE":"United Arab Emirates","GBR":"United Kingdom","GBD":"United Kingdom","GBN":"United Kingdom","GBO":"United Kingdom","GBP":"United Kingdom",
+"GBS":"United Kingdom","USA":"United States","URY":"Uruguay","UZB":"Uzbekistan","VUT":"Vanuatu","VAT":"Vatican City","VEN":"Venezuela",
+"VNM":"Vietnam","YEM":"Yemen","ZMB":"Zambia","ZWE":"Zimbabwe","UNO":"United Nations","XXA":"Stateless","XXB":"Refugee","XXC":"Refugee",
+}
+# long / official / demonym forms -> short name (keys lower-case, punctuation removed)
+COUNTRY_ALIASES = {
+"united kingdom of great britain and northern ireland":"United Kingdom","great britain":"United Kingdom","britain":"United Kingdom",
+"uk":"United Kingdom","u k":"United Kingdom","england":"United Kingdom","scotland":"United Kingdom","wales":"United Kingdom",
+"northern ireland":"United Kingdom","british":"United Kingdom","british citizen":"United Kingdom",
+"islamic republic of pakistan":"Pakistan","pakistani":"Pakistan","pak":"Pakistan",
+"united states of america":"United States","usa":"United States","us":"United States","u s a":"United States","american":"United States",
+"peoples republic of china":"China","people s republic of china":"China","chinese":"China",
+"republic of india":"India","indian":"India","peoples republic of bangladesh":"Bangladesh","bangladeshi":"Bangladesh",
+"federal republic of nigeria":"Nigeria","nigerian":"Nigeria","republic of cameroon":"Cameroon","cameroonian":"Cameroon",
+"republique du cameroun":"Cameroon","federal republic of germany":"Germany","bundesrepublik deutschland":"Germany","german":"Germany",
+"french republic":"France","republique francaise":"France","french":"France","kingdom of saudi arabia":"Saudi Arabia","saudi":"Saudi Arabia",
+"united arab emirates":"United Arab Emirates","uae":"United Arab Emirates","emirati":"United Arab Emirates",
+"islamic republic of iran":"Iran","iranian":"Iran","russian federation":"Russia","russian":"Russia","republic of korea":"South Korea",
+"korea republic of":"South Korea","democratic peoples republic of korea":"North Korea","arab republic of egypt":"Egypt","egyptian":"Egypt",
+"republic of turkey":"Turkey","republic of turkiye":"Turkey","turkiye":"Turkey","turkish":"Turkey","kingdom of the netherlands":"Netherlands",
+"the netherlands":"Netherlands","holland":"Netherlands","dutch":"Netherlands","kingdom of spain":"Spain","spanish":"Spain","italian republic":"Italy",
+"italian":"Italy","republic of ireland":"Ireland","irish":"Ireland","canadian":"Canada","commonwealth of australia":"Australia","australian":"Australia",
+"republic of kenya":"Kenya","kenyan":"Kenya","republic of ghana":"Ghana","ghanaian":"Ghana","republic of south africa":"South Africa",
+"south african":"South Africa","republic of the philippines":"Philippines","filipino":"Philippines","socialist republic of viet nam":"Vietnam",
+"viet nam":"Vietnam","vietnamese":"Vietnam","lao peoples democratic republic":"Laos","syrian arab republic":"Syria","state of palestine":"Palestine",
+"republic of moldova":"Moldova","united republic of tanzania":"Tanzania","bolivarian republic of venezuela":"Venezuela",
+"plurinational state of bolivia":"Bolivia","czechia":"Czech Republic","slovak republic":"Slovakia","cote divoire":"Ivory Coast",
+"democratic republic of congo":"Democratic Republic of the Congo","dr congo":"Democratic Republic of the Congo","republic of the congo":"Congo",
+"hong kong sar":"Hong Kong","hong kong special administrative region":"Hong Kong","macao sar":"Macao","taiwan province of china":"Taiwan",
+"republic of china":"Taiwan","brunei darussalam":"Brunei","kingdom of morocco":"Morocco","moroccan":"Morocco","afghan":"Afghanistan",
+"islamic republic of afghanistan":"Afghanistan","sri lankan":"Sri Lanka","democratic socialist republic of sri lanka":"Sri Lanka",
+"nepalese":"Nepal","federal democratic republic of nepal":"Nepal","malaysian":"Malaysia","indonesian":"Indonesia","republic of indonesia":"Indonesia",
+"mexican":"Mexico","united mexican states":"Mexico","brazilian":"Brazil","federative republic of brazil":"Brazil","japanese":"Japan",
+"swiss confederation":"Switzerland","swiss":"Switzerland","polish":"Poland","republic of poland":"Poland","romanian":"Romania",
+"portuguese republic":"Portugal","portuguese":"Portugal","hellenic republic":"Greece","greek":"Greece","state of qatar":"Qatar","qatari":"Qatar",
+"state of kuwait":"Kuwait","kuwaiti":"Kuwait","kingdom of bahrain":"Bahrain","sultanate of oman":"Oman","omani":"Oman","jordanian":"Jordan",
+"hashemite kingdom of jordan":"Jordan","lebanese":"Lebanon","lebanese republic":"Lebanon","iraqi":"Iraq","republic of iraq":"Iraq",
+"ukrainian":"Ukraine","ethiopian":"Ethiopia","federal democratic republic of ethiopia":"Ethiopia","somali":"Somalia","sudanese":"Sudan",
+"ugandan":"Uganda","republic of uganda":"Uganda","zimbabwean":"Zimbabwe","zambian":"Zambia","senegalese":"Senegal","ivorian":"Ivory Coast",
+"cameroun":"Cameroon","maroc":"Morocco","algerie":"Algeria","allemagne":"Germany","espagne":"Spain","italie":"Italy","tunisie":"Tunisia",
+"royaume uni":"United Kingdom","etats unis":"United States","belgique":"Belgium","suisse":"Switzerland","deutschland":"Germany",
+"espana":"Spain","turkiye cumhuriyeti":"Turkey","misr":"Egypt",
+}
+
+
+def _ckey(s: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z ]", "", (s or "").lower().replace("-", " "))).strip()
+
+
+_COUNTRY_BY_NAME = {_ckey(v): v for v in COUNTRY_ISO3.values()}
+_COUNTRY_PREFIXES = ("the ", "islamic republic of ", "federal republic of ", "peoples republic of ", "democratic republic of ",
+                     "republic of ", "kingdom of ", "state of ", "commonwealth of ", "principality of ", "sultanate of ")
+
+
+def short_country(s: str) -> str:
+    """'United Kingdom of Great Britain and Northern Ireland' -> 'United Kingdom', 'PAK' -> 'Pakistan',
+    'ISLAMIC REPUBLIC OF PAKISTAN' -> 'Pakistan'. Several countries ('Pakistan / UK') are kept, each shortened."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    parts = [x for x in re.split(r"\s*(?:/|;|,| and also )\s*", s) if x] if re.search(r"[/;]", s) else [s]
+    out = []
+    for part in parts:
+        raw = part.strip()
+        up = re.sub(r"[^A-Z]", "", raw.upper())
+        k = _ckey(raw)
+        name = (COUNTRY_ISO3.get(up) if len(raw) <= 3 and up in COUNTRY_ISO3 else None) or COUNTRY_ALIASES.get(k) \
+            or _COUNTRY_BY_NAME.get(k)
+        if not name:
+            for pre in _COUNTRY_PREFIXES:
+                if k.startswith(pre):
+                    k2 = k[len(pre):]
+                    name = COUNTRY_ALIASES.get(k2) or _COUNTRY_BY_NAME.get(k2)
+                    if name:
+                        break
+        if not name:
+            name = raw.title() if raw.isupper() or raw.islower() else raw
+        if name not in out:
+            out.append(name)
+    return ", ".join(out)
+
+
+# ----------------------------------------------------------------------------- passport code lines (MRZ)
+
+def _mrz_val(c: str) -> int:
+    if c.isdigit():
+        return int(c)
+    if "A" <= c <= "Z":
+        return ord(c) - 55
+    return 0
+
+
+def _mrz_cd(s: str) -> str:
+    return str(sum(_mrz_val(c) * (7, 3, 1)[i % 3] for i, c in enumerate(s)) % 10)
+
+
+def _mrz_date(yymmdd: str, birth: bool) -> str:
+    if not re.fullmatch(r"\d{6}", yymmdd or ""):
+        return ""
+    yy, mm, dd = int(yymmdd[:2]), int(yymmdd[2:4]), int(yymmdd[4:])
+    year = (2000 + yy) if (not birth or 2000 + yy <= dt.date.today().year) else 1900 + yy
+    try:
+        return dt.date(year, mm, dd).isoformat()
+    except ValueError:
+        return ""
+
+
+def _mrz_clean(line: str) -> str:
+    line = re.sub(r"\s+", "", (line or "").upper())
+    return re.sub(r"[^A-Z0-9<]", "<", line)
+
+
+def parse_mrz(l1: str, l2: str, l3: str = "") -> dict:
+    """Read the machine-readable zone of a passport (TD3, 2 x 44) or ID card (TD1, 3 x 30) and check its check digits.
+    Returns {} if the lines can't be used."""
+    l1, l2, l3 = _mrz_clean(l1), _mrz_clean(l2), _mrz_clean(l3)
+    out = {"ok": {}}
+    if len(l1) >= 40 and len(l2) >= 40:                       # TD3 passport
+        l1, l2 = (l1 + "<" * 44)[:44], (l2 + "<" * 44)[:44]
+        names = l1[5:44]
+        doc, nat, dob, sex, exp = l2[0:9], l2[10:13], l2[13:19], l2[20], l2[21:27]
+        out["ok"] = {"document_number": _mrz_cd(doc) == l2[9], "date_of_birth": _mrz_cd(dob) == l2[19],
+                     "expiry_date": _mrz_cd(exp) == l2[27]}
+        out["ok"]["composite"] = _mrz_cd(l2[0:10] + l2[13:20] + l2[21:43]) == l2[43]
+        issuer = l1[2:5]
+    elif len(l1) >= 28 and len(l2) >= 28 and len(l3) >= 28:  # TD1 ID card
+        l1, l2, l3 = (l1 + "<" * 30)[:30], (l2 + "<" * 30)[:30], (l3 + "<" * 30)[:30]
+        doc, issuer = l1[5:14], l1[2:5]
+        dob, sex, exp, nat = l2[0:6], l2[7], l2[8:14], l2[15:18]
+        names = l3
+        out["ok"] = {"document_number": _mrz_cd(doc) == l1[14], "date_of_birth": _mrz_cd(dob) == l2[6],
+                     "expiry_date": _mrz_cd(exp) == l2[14]}
+    else:
+        return {}
+    sur, _, given = names.partition("<<")
+    out.update(surname=sur.replace("<", " ").strip(), given_names=given.replace("<", " ").strip(),
+               document_number=doc.replace("<", ""), nationality=short_country(nat.replace("<", "")),
+               issuing_country=short_country(issuer.replace("<", "")),
+               date_of_birth=_mrz_date(dob, True), expiry_date=_mrz_date(exp, False),
+               sex=sex if sex in "MF" else "")
+    return out
+
+
+def _nm(s: str) -> str:
+    return re.sub(r"[^A-Z]", "", (s or "").upper())
+
+
+def mrz_compare(d: dict) -> list[dict]:
+    """Compare the printed passport details with the code lines. Returns the fields that disagree:
+    [{"field": form field id, "label", "printed", "mrz", "verified": check digit passed}]"""
+    m = d.get("mrz") or {}
+    if not m:
+        return []
+    out = []
+
+    def add(field, label, printed, code, verified=True):
+        out.append({"field": field, "label": label, "printed": printed or "", "mrz": code or "", "verified": bool(verified)})
+
+    ps, ms = _nm(d.get("surname")), _nm(m.get("surname"))
+    if ms and ps != ms and not (len(ms) >= 30 and ps.startswith(ms)):        # long names are cut short in the code line
+        add("last", "Last name", d.get("surname"), m.get("surname"), m["ok"].get("composite", True))
+    pg = _nm(d.get("given_names") or " ".join(x for x in (d.get("first_name"), d.get("middle_name")) if x))
+    mg = _nm(m.get("given_names"))
+    if mg and pg != mg and not (len(mg) >= 20 and pg.startswith(mg)):
+        add("first", "First / middle names", d.get("given_names") or d.get("first_name"), m.get("given_names"),
+            m["ok"].get("composite", True))
+    for f, lbl, key in (("dob", "Date of birth", "date_of_birth"), ("id_expiry", "Expiry date", "expiry_date"),
+                        ("id_number", "Passport number", "document_number")):
+        if m.get(key) and (d.get(key) or "").replace(" ", "").upper() != m[key].upper():
+            add(f, lbl, d.get(key), m[key], m["ok"].get(key, False))
+    if m.get("sex") and d.get("sex") and d["sex"] != m["sex"]:
+        add("sex", "Sex", d.get("sex"), m["sex"])
+    if m.get("nationality") and d.get("nationality") and short_country(d["nationality"]) != m["nationality"]:
+        add("citizenship", "Citizenship", d.get("nationality"), m["nationality"])
+    return out
+
+
+def _split_birth_place(place: str) -> tuple[str, str]:
+    """'SIALKOT, PAK' -> ('Sialkot', 'Pakistan'); 'LONDON' -> ('London', '')."""
+    place = (place or "").strip()
+    if not place:
+        return "", ""
+    bits = [b.strip() for b in re.split(r"[,/]", place) if b.strip()]
+    city = bits[0]
+    country = short_country(bits[-1]) if len(bits) > 1 else ""
+    if len(bits) == 1:                                      # 'LAHORE PAK' – trailing country code
+        mm = re.match(r"^(.*\S)\s+([A-Z]{3})$", place)
+        if mm and mm.group(2) in COUNTRY_ISO3:
+            city, country = mm.group(1), COUNTRY_ISO3[mm.group(2)]
+        elif short_country(place) in COUNTRY_ISO3.values():   # only a country is printed
+            return "", short_country(place)
+    return (city.title() if city.isupper() else city), country
+
+
+def tidy_identity(d: dict) -> dict:
+    """After the AI has read an ID: short country names, city of birth, and the code-line (MRZ) check."""
+    for k in ("nationality", "birth_country", "issuing_country"):
+        d[k] = short_country(d.get(k, ""))
+    city, country = _split_birth_place(d.get("place_of_birth", ""))
+    if not d.get("birth_city") and city:
+        d["birth_city"] = city
+    elif d.get("birth_city", "").isupper():
+        d["birth_city"] = d["birth_city"].title()
+    if not d.get("birth_country") and country:
+        d["birth_country"] = country
+    mrz = parse_mrz(d.get("mrz_line1", ""), d.get("mrz_line2", ""), d.get("mrz_line3", ""))
+    if mrz:
+        d["mrz"] = mrz
+        d["mrz_mismatch"] = mrz_compare(d)
+        bad = [k for k, v in mrz["ok"].items() if not v]
+        d["mrz_status"] = ("Code lines read – check digits OK." if not bad else
+                           "Code lines read, but some check digits fail (" + ", ".join(x.replace("_", " ") for x in bad) +
+                           ") – the AI may have misread them; trust the printed page and check by eye.")
+    elif d.get("document_type") == "passport":
+        d["mrz_status"] = "The code lines at the bottom of the passport could not be read – check the name and date of birth by eye."
+    if not d.get("sex") and mrz.get("sex"):
+        d["sex"] = mrz["sex"]
+    return d
+
+
+
+def _pdf_pages_for(data: bytes, kind: str) -> list[int] | None:
+    """Tax return packs are long: send the 1040 front pages plus any Form W-7 page (max 6 pages)."""
+    if kind != "tax_return" or data[:4] != b"%PDF":
+        return None
+    import pymupdf
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    n = len(doc)
+    pick = [0, 1][:n]
+    for i, page in enumerate(doc):
+        t = page.get_text().lower()
+        if i not in pick and ("form w-7" in t or "individual taxpayer identification number" in t
+                              or "application for irs individual" in t):
+            pick.append(i)
+    if len(pick) <= 2 and n > 2 and not any(doc[i].get_text().strip() for i in range(n)):   # scanned pack – no text
+        pick = list(range(min(n, 6)))
+    return sorted(pick)[:6]
+
+
 def scan_passport(data: bytes, filename: str, kind: str = "identity") -> dict:
     cfg = _cfg()
     key = cfg.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
@@ -222,17 +507,20 @@ def scan_passport(data: bytes, filename: str, kind: str = "identity") -> dict:
     import anthropic
     client = anthropic.Anthropic(api_key=key)
     content = [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": base64.b64encode(b).decode()}}
-               for mt, b in _to_images(data, filename)]
+               for mt, b in _to_images(data, filename, _pdf_pages_for(data, kind))]
     content.append({"type": "text", "text": "Read this document and return the JSON."})
     resp = client.messages.create(model=cfg.get("model") or os.environ.get("MAILSORT_MODEL", "claude-sonnet-4-5"),
-                                  max_tokens=900, system=SCAN_PROMPTS.get(kind, SCAN_SYSTEM),
+                                  max_tokens=1600, system=SCAN_PROMPTS.get(kind, SCAN_SYSTEM),
                                   messages=[{"role": "user", "content": content}])
     raw = resp.content[0].text.strip()
     m = re.search(r"\{.*\}", raw, re.S)
     if not m:
         raise RuntimeError("The AI reply could not be read – type the details by hand.")
     d = json.loads(m.group(0))
-    return {k: (v if isinstance(v, (bool, list)) else str(v or "").strip()) for k, v in d.items()}
+    d = {k: (v if isinstance(v, (bool, list, dict)) else str(v or "").strip()) for k, v in d.items()}
+    if kind == "identity":
+        d = tidy_identity(d)
+    return d
 
 
 # ----------------------------------------------------------------------------- PDF filling
@@ -511,6 +799,8 @@ DOC_TYPES = {
     "exception": ("Exception documents – bank / payer letter, partnership agreement, mortgage or property papers",
                   "AI suggests which exception (box h) applies", "exception", None),
     "us_person": ("US spouse / parent – SSN card or ITIN letter", "Fills name and SSN/ITIN for boxes d and e", "us_person", None),
+    "marriage": ("Marriage certificate (spouse – box e)", "Shows the marriage to the U.S. citizen/resident; AI checks the names",
+                 "marriage", None),
     "residency": ("Dependant's US residency proof – US school or medical record, US ID, US bank statement",
                   "Required by the IRS for dependants (box d)", None, None),
     "prev_itin": ("Old ITIN letter (CP565) – renewals or previous ITIN", "Fills line 6e/6f", "prev_itin", None),
@@ -534,10 +824,12 @@ def doc_rules(a: dict) -> dict:
         "other_id": ("opt", "" if pp else "Use as the second ID if needed"),
         "address": ("opt", "Saves typing the address"),
         "visa": ("cond", "Boxes f and g need the US visa") if r & {"f", "g"} else ("opt", ""),
-        "tax_return": (("na", "Exception claimed in box h instead") if "h" in r else
+        "tax_return": (("cond", "Boxes b, c, e and f need the U.S. tax return") if (r & {"b", "c", "e"} or ("f" in r and "h" not in r)) else
+                       ("na", "Exception claimed in box h instead") if "h" in r else
                        ("opt", "Not needed for a first-time (new) application – add it if there is one")
                        if ret and a.get("app_type") != "renew" else
                        ("cond", "Boxes b–g need the tax return") if ret else ("opt", "")),
+        "marriage": ("opt", "Spouse of a U.S. citizen/resident (box e)") if "e" in r else ("na", ""),
         "exception": ("cond", "Box h – the IRS needs proof of the exception") if "h" in r else ("na", ""),
         "us_person": ("opt", "Fills the US person's name and number") if r & {"d", "e"} else ("na", ""),
         "residency": ("cond", "Box d – dependants must prove US residency") if "d" in r else ("na", ""),
@@ -618,6 +910,8 @@ def support_doc(a: dict) -> str:
     r = set(a.get("reasons") or [])
     if "h" in r:
         return f"Documents supporting the exception claimed ({a.get('reason_h_text') or 'box h'})"
+    if r & {"b", "c", "e"} or ("f" in r and "h" not in r):
+        return "The applicant's U.S. federal tax return (W-7 goes on top, return attached behind it)"
     if r & {"b", "c", "d", "e", "f", "g"}:
         if a.get("app_type") != "renew":
             return "The applicant's U.S. federal tax return, if there is one (W-7 on top, return behind it)"
@@ -731,7 +1025,7 @@ TEXT_KEYS = ("app_type", "rel_relationship", "us_person_name", "us_person_tin", 
              "foreign_1", "foreign_2", "dob", "birth_country", "birth_city", "sex", "citizenship", "foreign_tin", "visa",
              "id_type", "id_other", "id_issued_by", "id_number", "id_expiry", "us_entry", "prev", "prev_itin", "prev_irsn",
              "prev_first", "prev_middle", "prev_last", "college", "college_city", "stay", "phone", "delegate_name",
-             "delegate_rel", "client_ref")
+             "delegate_rel", "client_ref", "us_travel")
 
 
 OUR_CHOICES = {"ours": ("our_mail_1", "our_mail_2", "Houston office"),
@@ -923,6 +1217,30 @@ def itin_caa():
     return redirect("/itin")
 
 
+def doc_names(kind: str, d: dict) -> list[str]:
+    """Names of the APPLICANT as printed on a document – the page checks them against the client name typed in."""
+    j = lambda *x: " ".join(str(v) for v in x if v).strip()
+    if kind == "identity":              # printed name, plus the code-line name (it is right when the AI misreads the page)
+        m = d.get("mrz") or {}
+        return [j(d.get("given_names") or j(d.get("first_name"), d.get("middle_name")), d.get("surname"))
+                + (" / " + j(m.get("given_names"), m.get("surname")) if m.get("surname") else "")]
+    if kind == "address":
+        return [d.get("name_on_document", "")]
+    if kind == "visa":
+        return [d.get("name", "")]
+    if kind == "exception":
+        return [d.get("name_of_applicant", "")]
+    if kind == "prev_itin":
+        return [j(d.get("first_name"), d.get("middle_name"), d.get("last_name"))]
+    if kind == "tax_return":            # the applicant is one of the people on the return; the W-7 inside names them
+        names = [str(x) for x in (d.get("names") or [])]
+        w7 = d.get("w7") if isinstance(d.get("w7"), dict) else {}
+        return [" / ".join(n for n in names if n)] + ([w7["applicant_name"]] if w7.get("applicant_name") else [])
+    if kind == "marriage":
+        return [" / ".join(x for x in (d.get("spouse_1_name"), d.get("spouse_2_name")) if x)]
+    return []
+
+
 @bp.post("/itin/scan")
 def itin_scan():
     up = request.files.get("file") or request.files.get("id_file")
@@ -934,7 +1252,9 @@ def itin_scan():
     if len(data) > 15_000_000:
         return jsonify(ok=False, error="File is larger than 15 MB – please use a smaller scan.")
     try:
-        return jsonify(ok=True, doc=key, kind=kind, data=scan_passport(data, up.filename, kind))
+        d = scan_passport(data, up.filename, kind)
+        d["doc_names"] = [x for x in doc_names(kind, d) if x and x.strip(" /")]
+        return jsonify(ok=True, doc=key, kind=kind, data=d)
     except Exception as ex:
         return jsonify(ok=False, error=f"Could not read the document: {ex}")
 
@@ -1261,6 +1581,11 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
 table.coa td,table.coa th{text-align:center}table.coa td:first-child,table.coa th:first-child{text-align:left}
 table.coa input{width:16px;height:16px}
 tr.manualonly{display:none}
+.chk{outline:2px solid #f59e0b !important;background:#fffbeb !important;border-radius:6px}
+.chknote{background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:6px 8px;margin:4px 0 6px;font-size:12.5px;line-height:1.5}
+.sug{background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13px}
+.sug td{padding:3px 8px 3px 0}
+table.trips{font-size:13px;margin:6px 0}table.trips td,table.trips th{padding:3px 12px 3px 0;text-align:left}
 </style>
 <div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><h1 style="margin:0">ITIN application (Form W-7)</h1>
 <div><a class="btn" href="/itin/guide">📘 Staff guide</a> <a class="btn secondary" href="/itin/guide#ask">What to ask the client</a></div></div>
@@ -1341,6 +1666,7 @@ The tracker ticks client consent (and the signatures, if you enter their dates) 
 The <b>Needed?</b> column changes as you tick the reason boxes below. Press <b>Read with AI</b> to fill the form from that document – then check every field.
 Scans: colour, all four corners visible, PDF/JPG/PNG. Documents can also be added later on the application page. <a href="/itin/guide#docs">More</a></p>
 {% if prefill and not from_job %}<div class="warn">Please choose the files again – browsers clear uploads after a correction.</div>{% endif %}
+<div id="namecheck"></div>
 <table class="doctab"><tr><th>Document</th><th style="width:190px">Needed?</th><th style="width:250px">Upload</th><th style="width:120px"></th></tr>
 {% for k, d in doc_types.items() %}<tr id="row_{{k}}" {% if k == 'signed_w7' %}class="manualonly"{% endif %} data-has="{{ '1' if ex.get(k) else '' }}"><td><b>{{d[0]}}</b><br><span class="muted">{{d[1]}}</span>
 {% if ex.get(k) %}<div style="color:#166534;font-size:13px;margin-top:4px">✔ Already uploaded: {% for x in ex[k] %}<a href="/itin/job/{{from_job}}/file/{{x.file}}?inline=1" target="_blank">{{x.orig or x.file}}</a>{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}<div id="msg_{{k}}"></div></td>
@@ -1415,7 +1741,13 @@ and prints "Never entered the U.S." when there is no entry date. <a href="/itin/
 <div><label>Issued by (country)</label><input type="text" name="id_issued_by" id="id_issued_by" value="{{p.id_issued_by}}"></div>
 <div><label>Document number</label><input type="text" name="id_number" id="id_number" value="{{p.id_number}}"></div>
 <div><label>Expiry date</label><input type="date" name="id_expiry" id="id_expiry" value="{{p.id_expiry}}"></div>
-<div><label>Date of entry into the U.S. (blank = never entered)</label><input type="date" name="us_entry" value="{{p.us_entry}}"></div></div>
+<div><label>Date of entry into the U.S. (blank = never entered)</label><input type="date" name="us_entry" value="{{p.us_entry}}" onchange="travelCheck()"></div></div>
+<details {% if p.us_travel %}open{% endif %} style="margin-top:8px"><summary style="cursor:pointer" class="muted">US travel dates – paste the client's trips to check them and get the latest entry date</summary>
+<textarea name="us_travel" id="us_travel" rows="4" style="width:100%;margin-top:6px;font-family:inherit;font-size:13px"
+ placeholder="One trip per line, arrival then departure, e.g.&#10;12/03/2024 - 20/03/2024&#10;Arrived 5 Jan 2025, left 18 Jan 2025" oninput="travelCheck()">{{p.us_travel}}</textarea>
+<div class="radios" style="font-size:13px">Dates are written as: <label><input type="radio" name="tfmt" value="dmy" checked onchange="travelCheck()"> DD/MM/YYYY (UK)</label>
+<label><input type="radio" name="tfmt" value="mdy" onchange="travelCheck()"> MM/DD/YYYY (US)</label></div>
+<div id="travel_out"></div></details>
 
 <span class="ln">6e / 6f Previous ITIN or IRSN</span>
 <div class="radios"><label><input type="radio" name="prev" value="no" onchange="showExtras()" {% if p.prev != 'yes' %}checked{% endif %}> No / Don't know</label>
@@ -1433,7 +1765,7 @@ and prints "Never entered the U.S." when there is no entry date. <a href="/itin/
 <div><label>Length of stay</label><input type="text" name="stay" value="{{p.stay}}"></div></div>
 
 <span class="ln">Sign here</span>
-<div class="fgrid"><div><label>Applicant's phone number</label><input type="text" name="phone" value="{{p.phone}}"></div>
+<div class="fgrid"><div><label>Applicant's phone number</label><input type="text" name="phone" id="app_phone" value="{{p.phone}}"></div>
 <div><label>Name of delegate (only if signing for the applicant)</label><input type="text" name="delegate_name" value="{{p.delegate_name}}"></div>
 <div><label>Delegate's relationship</label><select name="delegate_rel"><option value="">—</option>
 {% for k, lbl in [('parent','Parent'),('poa','Power of attorney'),('guardian','Court-appointed guardian')] %}<option value="{{k}}" {% if p.delegate_rel == k %}selected{% endif %}>{{lbl}}</option>{% endfor %}</select></div></div>
@@ -1449,7 +1781,7 @@ and prints "Never entered the U.S." when there is no entry date. <a href="/itin/
 
 {% set pm = p.manual or {} %}
 <div class="card" id="manual"><h2><span class="step">5</span>Manual filing – KYC &amp; signatures done offline <span class="muted" style="font-size:13px;font-weight:400">(skip for the normal KYC-link route)</span></h2>
-<label class="tick"><input type="checkbox" name="manual" id="manual_on" value="1" {% if pm or manual_pref %}checked{% endif %} onchange="setManual(this.checked)">
+<label class="tick" for="manual_on"><input type="checkbox" name="manual" id="manual_on" value="1" {% if pm or manual_pref %}checked{% endif %}>
 This is a manual filing – I checked the client's ID myself and collected the signatures on paper (no KYC link)</label>
 <div id="manual_box" style="display:none">
 <div class="fgrid">
@@ -1503,6 +1835,7 @@ function syncCoa(){
 }
 function setv(id, v){ if(v && $(id)) $(id).value = v }
 var LEVELS = {{ levels|tojson }};
+var DOCLABEL = { {% for k, d in doc_types.items() %}{{k|tojson}}: {{ d[0].split(' – ')[0].split(' (')[0]|tojson }}{% if not loop.last %}, {% endif %}{% endfor %} };
 var COAMAP = {passport:'passport', national_id:'national_id', birth_cert:'birth_cert', visa:'visa'};
 function docRules(){   // mirrors doc_rules() in itinforms.py
   var r={}; 'abcdefgh'.split('').forEach(function(k){ r[k]=on('r_'+k) });
@@ -1517,7 +1850,9 @@ function docRules(){   // mirrors doc_rules() in itinforms.py
     other_id: ['opt', pp ? '' : 'Use as the second ID if needed'],
     address: ['opt','Saves typing the address'],
     visa: (r.f||r.g) ? ['cond','Boxes f and g need the US visa'] : ['opt',''],
-    tax_return: r.h ? ['na','Exception claimed in box h instead'] : (ret ? (renew ? ['cond','Boxes b–g need the tax return'] : ['opt','Not needed for a first-time (new) application – add it if there is one']) : ['opt','']),
+    tax_return: (r.b||r.c||r.e||(r.f&&!r.h)) ? ['cond','Boxes b, c, e and f need the U.S. tax return'] :
+      (r.h ? ['na','Exception claimed in box h instead'] : (ret ? (renew ? ['cond','Boxes b–g need the tax return'] : ['opt','Not needed for a first-time (new) application – add it if there is one']) : ['opt',''])),
+    marriage: r.e ? ['opt','Spouse of a U.S. citizen/resident (box e)'] : ['na',''],
     exception: r.h ? ['cond','Box h – the IRS needs proof of the exception'] : ['na',''],
     us_person: (r.d||r.e) ? ['opt',"Fills the US person's name and number"] : ['na',''],
     residency: r.d ? ['cond','Box d – dependants must prove US residency'] : ['na',''],
@@ -1548,7 +1883,7 @@ function setManual(v){
   if($('manual_on')) $('manual_on').checked = v;
   if($('manual_box')) $('manual_box').style.display = v ? '' : 'none';
   document.querySelectorAll('.manualonly').forEach(function(r){ r.style.display = v ? 'table-row' : 'none' });
-  if(window.paintDocs) paintDocs();
+  try{ paintDocs() }catch(e){}
 }
 function paintDocs(){
   var R = docRules();
@@ -1564,69 +1899,234 @@ function picked(k){
 }
 function setv(id, v){ if(v && $(id)) $(id).value = v }
 function usd(iso){ return /^\d{4}-\d{2}-\d{2}$/.test(iso||'') ? iso.slice(5,7)+'/'+iso.slice(8,10)+'/'+iso.slice(0,4) : (iso||'') }
+// ---- name check: names on documents vs the client name typed in (step 3) --------------------------------------
+var NAMECHK = {};
+function _toks(s){ return String(s||'').toUpperCase().split(/[^A-Z]+/).filter(function(t){return t.length>1}) }
+function _close(a,b){
+  if(a==b) return true;
+  if(Math.min(a.length,b.length)<5 || Math.abs(a.length-b.length)>1) return false;
+  var prev=[]; for(var j=0;j<=b.length;j++) prev.push(j);
+  for(var i=1;i<=a.length;i++){ var cur=[i]; for(var j=1;j<=b.length;j++) cur.push(Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]!=b[j-1]?1:0))); prev=cur }
+  return prev[b.length]<=1;
+}
+function nameMatch(first, last, docName){   // last name (every word) + at least one first-name word must appear
+  var d=_toks(docName), l=_toks(last), f=_toks(first);
+  if(!d.length || !l.length) return null;
+  var okL = l.every(function(t){ return d.some(function(x){return _close(t,x)}) });
+  var okF = !f.length || f.some(function(t){ return d.some(function(x){return _close(t,x)}) });
+  return okL && okF;
+}
+function paintNameCheck(){
+  var first=$('first').value, last=$('last').value, bad=[], box=$('namecheck');
+  for(var k in NAMECHK){
+    var names=NAMECHK[k], hit=names.some(function(n){ return n.split(' / ').some(function(x){ return nameMatch(first,last,x)!==false }) });
+    if(!hit) bad.push('<li><b>'+esc((DOCLABEL[k]||k))+'</b>: "'+esc(names.join(' / '))+'"</li>');
+  }
+  if(!box) return bad.length;
+  box.innerHTML = bad.length ? '<div class="bad">⚠ <b>Name check:</b> these documents are not in the name of <b>'+esc((first+' '+last).trim()||'the client')+
+    '</b> – make sure you are preparing the W-7 for the right person:<ul style="margin:6px 0 0">'+bad.join('')+'</ul></div>' : '';
+  return bad.length;
+}
+// ---- highlights: fields where the passport's printed page and code lines disagree --------------------------------
+function fieldEl(id){ return id=='sex' ? $('sex_M').closest('.radios') : ($(id) || document.querySelector('[name='+id+']')) }
+function flag(id, html){
+  var el=fieldEl(id); if(!el) return;
+  el.classList.add('chk');
+  var n=document.createElement('div'); n.className='chknote'; n.innerHTML=html; el.parentNode.appendChild(n);
+  var clear=function(){ el.classList.remove('chk'); n.remove(); el.removeEventListener('input', clear); el.removeEventListener('change', clear) };
+  el.addEventListener('input', clear); el.addEventListener('change', clear);
+}
+function clearFlags(){ document.querySelectorAll('.chknote').forEach(function(n){n.remove()}); document.querySelectorAll('.chk').forEach(function(e){e.classList.remove('chk')}) }
+function useMrz(field, v){
+  if(field=='first'){ var p=String(v).split(/\s+/); $('first').value=p.shift()||''; $('middle').value=p.join(' ') }
+  else if(field=='sex'){ if($('sex_'+v)) $('sex_'+v).checked=true }
+  else { var el=fieldEl(field); if(el) el.value=v }
+  var el2=fieldEl(field); if(el2){ el2.dispatchEvent(new Event('change')) }
+  paintNameCheck();
+}
+// ---- suggestions from the tax return / marriage certificate: shown, never written until "Use" is pressed -----------
+var SUG = [];
+function sugRow(field, label, value, after){
+  if(!value) return;
+  var el=fieldEl(field); if(el && String(el.value||'').trim().toUpperCase()==String(value).trim().toUpperCase()) return;
+  SUG.push({field:field, label:label, value:value, after:after||null});
+}
+function useSug(i){
+  var s=SUG[i]; if(!s || s.used) return;
+  var el=fieldEl(s.field); if(el){ el.value=s.value; el.dispatchEvent(new Event('input')) }
+  if(s.after) s.after();
+  s.used=true; var b=$('sugb_'+i); if(b){ b.textContent='✓ Used'; b.disabled=true }
+  paintDocs();
+}
+function useAllSug(){ SUG.forEach(function(_s,i){ useSug(i) }) }
+function sugHtml(start){
+  var rows=SUG.slice(start).map(function(s,j){ var i=start+j;
+    return '<tr><td>'+esc(s.label)+'</td><td><b>'+esc(s.value)+'</b></td><td><button type="button" class="btn small" id="sugb_'+i+'" onclick="useSug('+i+')">Use</button></td></tr>' });
+  if(!rows.length) return '';
+  return '<div class="sug"><b>Suggestions from this document</b> – nothing has been changed; press <b>Use</b> for the ones that are right.'+
+    '<table style="margin-top:6px">'+rows.join('')+'</table>'+(rows.length>1?'<button type="button" class="btn small secondary" onclick="for(var i='+start+';i<SUG.length;i++)useSug(i)">Use all</button>':'')+'</div>';
+}
+function tickPrev(){ $('prev_yes').checked=true; showExtras() }
+function tickSpouse(){ if(!on('r_d') && !on('r_e')){ $('r_e').checked=true } showExtras() }
+// ---- reading a document with AI ------------------------------------------------------------------------------------
+var PENDING = {};
 function readDoc(k){
   var f = $('f_'+k).files[0], msg = $('msg_'+k);
   if(!f){ msg.innerHTML = '<div class="bad">Choose the file first.</div>'; return }
   var fd = new FormData(); fd.append('file', f); fd.append('doc', k);
-  $('ai_'+k).disabled = true; msg.innerHTML = '<p class="muted">Reading… (10–20 seconds)</p>';
+  $('ai_'+k).disabled = true; msg.innerHTML = '<p class="muted">Reading… (10–30 seconds)</p>';
   fetch('/itin/scan', {method:'POST', body:fd}).then(function(r){return r.json()}).then(function(r){
     $('ai_'+k).disabled = false;
     if(!r.ok){ msg.innerHTML = '<div class="bad">'+esc(r.error)+'</div>'; return }
-    var d = r.data, ok = [], w = [];
-    if(r.kind=='identity'){
-      var hasPass = ($('f_passport').files||[]).length > 0;
-      if(k=='passport' || !$('first').value){
-        setv('first', d.first_name); setv('middle', d.middle_name); setv('last', d.surname);
-        setv('dob', d.date_of_birth); setv('birth_country', d.birth_country); setv('birth_city', d.birth_city);
-        setv('citizenship', d.nationality);
-        if(d.sex=='M'||d.sex=='F') $('sex_'+d.sex).checked = true;
-        ok.push('name, date of birth, sex, birth place, citizenship');
-      }
-      if(k=='passport' || (!hasPass && !$('id_number').value)){
-        setv('id_number', d.document_number); setv('id_issued_by', d.issuing_country); setv('id_expiry', d.expiry_date);
-        if(k=='passport'){ $('id_type').value='passport'; syncCoa() }
-        else { $('id_type').value='other'; setv('id_other', d.document_type || 'National ID card'); showExtras() }
-        ok.push('6d document details');
-      }
-      if(d.address_line1 && !document.querySelector('[name=mail_1]').value){
-        document.querySelector('[name=mail_1]').value = d.address_line1; document.querySelector('[name=mail_2]').value = d.address_line2||'';
-        ok.push('line 2 address');
-      }
-      if(d.expiry_date && d.expiry_date < new Date().toISOString().slice(0,10)) w.push('⚠ This document is EXPIRED ('+esc(d.expiry_date)+') – the IRS only accepts current documents.');
-      if(k=='passport' && !d.birth_country) w.push('Country of birth is not printed – ask the client and type it in.');
-    } else if(r.kind=='address'){
-      if(d.address_line1){ if(ourSel()){ document.querySelector('[name=foreign_1]').value = d.address_line1; document.querySelector('[name=foreign_2]').value = d.address_line2||''; ok.push('line 3 address') }
-        else { document.querySelector('[name=mail_1]').value = d.address_line1; document.querySelector('[name=mail_2]').value = d.address_line2||''; ok.push('line 2 address') } }
-      var nm = ($('last').value||'').toUpperCase();
-      if(nm && d.name_on_document && d.name_on_document.toUpperCase().indexOf(nm) < 0) w.push('Name on the document ("'+esc(d.name_on_document)+'") does not match the applicant – check it is the applicant\'s address.');
-    } else if(r.kind=='visa'){
-      var v = [d.visa_type, d.visa_number, d.visa_expiry ? 'exp. '+usd(d.visa_expiry) : ''].filter(Boolean).join(', ');
-      if(v){ document.querySelector('[name=visa]').value = v; ok.push('6c visa') }
-      if(d.entry_date){ document.querySelector('[name=us_entry]').value = d.entry_date; ok.push('date of entry') }
-    } else if(r.kind=='tax_return'){
-      var first=($('first').value||'').toUpperCase(), last=($('last').value||'').toUpperCase(), names=(d.names||[]).map(function(x){return String(x).toUpperCase()});
-      var match = last && names.some(function(n){ return n.indexOf(last)>=0 && (!first || n.indexOf(first)>=0) });
-      ok.push((d.form||'Return')+' '+(d.tax_year||'')+' read');
-      if(!last) w.push('Fill the applicant name first, then read the return again to check the names match.');
-      else if(!match) w.push('⚠ The name on the return ('+esc(names.join(' / '))+') does not match the applicant – the IRS rejects mismatched names.');
-      else ok.push('names match the applicant');
-    } else if(r.kind=='exception'){
-      if(d.suggested_exception){ if(!on('r_h')){ $('r_h').checked = true }
-        var h = document.querySelector('[name=reason_h_text]'); if(!h.value) h.value = d.suggested_exception; showExtras(); ok.push('box h → '+d.suggested_exception+' (check it)') }
-      if(d.is_original_on_letterhead===false) w.push('The IRS needs the ORIGINAL letter on letterhead – a copy is not enough.');
-      if(d.is_signed===false) w.push('The letter does not look signed.');
-    } else if(r.kind=='us_person'){
-      var a=document.querySelector('[name=us_person_name]'), b=document.querySelector('[name=us_person_tin]');
-      if(d.name) a.value=d.name; if(d.ssn_or_itin) b.value=d.ssn_or_itin; ok.push('US person name and number');
-    } else if(r.kind=='prev_itin'){
-      $('prev_yes').checked = true; showExtras();
-      ['prev_itin','prev_first','prev_middle','prev_last'].forEach(function(n, i){ var val=[d.itin,d.first_name,d.middle_name,d.last_name][i]; if(val) document.querySelector('[name='+n+']').value = val });
-      ok.push('6e/6f previous ITIN');
-    }
-    if(d.notes) w.push('AI note: '+esc(d.notes));
-    msg.innerHTML = '<div class="ok">Filled: '+esc(ok.join('; ')||'nothing new')+'. Check every field against the document.</div>' + (w.length ? '<div class="warn">'+w.join('<br>')+'</div>' : '');
-    paintDocs();
+    handleScan(k, r, false);
   }).catch(function(e){ $('ai_'+k).disabled = false; msg.innerHTML = '<div class="bad">Reading failed: '+esc(e)+'</div>' });
+}
+function forceFill(k){ if(PENDING[k]) handleScan(k, PENDING[k], true) }
+function handleScan(k, r, force){
+  var d = r.data, ok = [], w = [], msg = $('msg_'+k), extra = '', sugStart = SUG.length;
+  var first = $('first').value.trim(), last = $('last').value.trim();
+  var names = (d.doc_names||[]).filter(Boolean);
+  if(names.length) NAMECHK[k] = names; else delete NAMECHK[k];
+  var mism = (first||last) && names.length && !names.some(function(n){ return n.split(' / ').some(function(x){ return nameMatch(first,last,x)!==false }) });
+  if(r.kind=='identity'){
+    if(mism && !force){
+      PENDING[k] = r;
+      msg.innerHTML = '<div class="bad">⚠ <b>Different person?</b> This document is in the name of <b>'+esc(names.join(' / '))+'</b>, but the client name entered is <b>'+
+        esc((first+' '+last).trim())+'</b>. Nothing was filled in.<br><button type="button" class="btn small" style="margin-top:6px" onclick="forceFill(\''+k+'\')">It is the same person – fill from this document</button></div>';
+      paintNameCheck(); return;
+    }
+    if(k=='passport') clearFlags();
+    var hasPass = ($('f_passport').files||[]).length > 0;
+    if(k=='passport' || !$('first').value){
+      setv('first', d.first_name); setv('middle', d.middle_name); setv('last', d.surname);
+      setv('dob', d.date_of_birth); setv('birth_country', d.birth_country); setv('birth_city', d.birth_city);
+      setv('citizenship', d.nationality);
+      if(d.sex=='M'||d.sex=='F') $('sex_'+d.sex).checked = true;
+      ok.push('name, date of birth, sex, birth place'+(d.birth_city?' ('+d.birth_city+')':'')+', citizenship');
+    }
+    if(k=='passport' || (!hasPass && !$('id_number').value)){
+      setv('id_number', d.document_number); setv('id_issued_by', d.issuing_country); setv('id_expiry', d.expiry_date);
+      if(k=='passport'){ $('id_type').value='passport'; syncCoa() }
+      else { $('id_type').value='other'; setv('id_other', d.document_type || 'National ID card'); showExtras() }
+      ok.push('6d document details');
+    }
+    if(d.address_line1 && !document.querySelector('[name=mail_1]').value){
+      document.querySelector('[name=mail_1]').value = d.address_line1; document.querySelector('[name=mail_2]').value = d.address_line2||'';
+      ok.push('line 2 address');
+    }
+    (d.mrz_mismatch||[]).forEach(function(m){
+      var shown = (m.field=='dob'||m.field=='id_expiry') ? usd(m.mrz) : m.mrz;
+      flag(m.field, '⚠ Printed page says <b>'+esc((m.field=='dob'||m.field=='id_expiry')?usd(m.printed):m.printed)+'</b> but the code lines at the bottom say <b>'+esc(shown)+'</b>'+
+        (m.verified ? ' (check digit OK)' : ' (code line may be misread)')+' – check the passport. <button type="button" class="btn small secondary" onclick="useMrz(\''+m.field+'\',\''+esc(m.mrz).replace(/'/g,"\\'")+'\')">Use '+esc(shown)+'</button>');
+    });
+    if((d.mrz_mismatch||[]).length) w.push('⚠ '+d.mrz_mismatch.length+' field(s) differ between the printed page and the code lines – they are highlighted in yellow below.');
+    else if(d.mrz && d.mrz.ok && d.mrz.ok.date_of_birth) ok.push('code lines match the printed page');
+    if(d.mrz_status && !(d.mrz && d.mrz.ok && Object.keys(d.mrz.ok).every(function(x){return d.mrz.ok[x]}))) w.push(esc(d.mrz_status));
+    if(d.expiry_date && d.expiry_date < new Date().toISOString().slice(0,10)) w.push('⚠ This document is EXPIRED ('+esc(d.expiry_date)+') – the IRS only accepts current documents.');
+    if(k=='passport' && !d.birth_country) w.push('Country of birth is not printed – ask the client and type it in.');
+    if(k=='passport' && !d.birth_city) w.push('City of birth is not printed – ask the client (optional on the W-7).');
+  } else if(r.kind=='address'){
+    if(d.address_line1){ if(ourSel()){ document.querySelector('[name=foreign_1]').value = d.address_line1; document.querySelector('[name=foreign_2]').value = d.address_line2||''; ok.push('line 3 address') }
+      else { document.querySelector('[name=mail_1]').value = d.address_line1; document.querySelector('[name=mail_2]').value = d.address_line2||''; ok.push('line 2 address') } }
+  } else if(r.kind=='visa'){
+    var v = [d.visa_type, d.visa_number, d.visa_expiry ? 'exp. '+usd(d.visa_expiry) : ''].filter(Boolean).join(', ');
+    if(v){ document.querySelector('[name=visa]').value = v; ok.push('6c visa') }
+    if(d.entry_date){ document.querySelector('[name=us_entry]').value = d.entry_date; ok.push('date of entry') }
+  } else if(r.kind=='tax_return'){
+    ok.push((d.form||'Return')+' '+(d.tax_year||'')+' read'+(d.filing_status?' ('+d.filing_status+')':''));
+    if(!last) w.push('Fill the applicant name first, then read the return again to check the names match.');
+    else if(!mism) ok.push('names match the applicant');
+    sugRow('us_person_name', 'Box e – U.S. spouse\'s name', d.us_spouse_name, tickSpouse);
+    sugRow('us_person_tin', 'Box e – U.S. spouse\'s SSN/ITIN', d.us_spouse_ssn, tickSpouse);
+    var w7 = (d.w7_included && d.w7) ? d.w7 : null;
+    if(w7){
+      ok.push('a Form W-7 was found inside the pack');
+      sugRow('foreign_tin', '6b Foreign tax I.D. number', w7.foreign_tax_id);
+      sugRow('prev_itin', '6f Previous ITIN', w7.previous_itin, tickPrev);
+      sugRow('prev_irsn', '6f Previous IRSN', w7.previous_irsn, tickPrev);
+      sugRow('app_phone', 'Applicant\'s phone number', w7.phone);
+      if(!ourSel()){ sugRow('mail_1', 'Line 2 address – street', w7.mail_line1); sugRow('mail_2', 'Line 2 address – city/country', w7.mail_line2) }
+      sugRow('foreign_1', 'Line 3 foreign address – street', w7.foreign_line1); sugRow('foreign_2', 'Line 3 foreign address – city/country', w7.foreign_line2);
+    }
+    extra = sugHtml(sugStart);
+    if(!extra && (d.us_spouse_name || w7)) ok.push('the suggested details already match the form');
+  } else if(r.kind=='marriage'){
+    ok.push('marriage certificate read'+(d.marriage_date?' (married '+usd(d.marriage_date)+')':''));
+    var other = [d.spouse_1_name, d.spouse_2_name].filter(function(n){ return n && nameMatch(first,last,n)===false });
+    if(other.length==1) sugRow('us_person_name', 'Box e – U.S. spouse\'s name (from the certificate)', other[0], tickSpouse);
+    if(d.is_translation_needed===true) w.push('The certificate is not in English – a certified English translation is needed.');
+    extra = sugHtml(sugStart);
+  } else if(r.kind=='exception'){
+    if(d.suggested_exception){ if(!on('r_h')){ $('r_h').checked = true }
+      var h = document.querySelector('[name=reason_h_text]'); if(!h.value) h.value = d.suggested_exception; showExtras(); ok.push('box h → '+d.suggested_exception+' (check it)') }
+    if(d.is_original_on_letterhead===false) w.push('The IRS needs the ORIGINAL letter on letterhead – a copy is not enough.');
+    if(d.is_signed===false) w.push('The letter does not look signed.');
+  } else if(r.kind=='us_person'){
+    var a=document.querySelector('[name=us_person_name]'), b=document.querySelector('[name=us_person_tin]');
+    if(d.name) a.value=d.name; if(d.ssn_or_itin) b.value=d.ssn_or_itin; ok.push('US person name and number');
+  } else if(r.kind=='prev_itin'){
+    $('prev_yes').checked = true; showExtras();
+    ['prev_itin','prev_first','prev_middle','prev_last'].forEach(function(n, i){ var val=[d.itin,d.first_name,d.middle_name,d.last_name][i]; if(val) document.querySelector('[name='+n+']').value = val });
+    ok.push('6e/6f previous ITIN');
+  }
+  if(mism && r.kind!='identity') w.unshift('⚠ <b>Different person?</b> This document is in the name of <b>'+esc(names.join(' / '))+'</b>, not <b>'+esc((first+' '+last).trim())+'</b>.');
+  if(d.notes) w.push('AI note: '+esc(d.notes));
+  delete PENDING[k];
+  msg.innerHTML = '<div class="ok">Filled: '+esc(ok.join('; ')||'nothing new')+'. Check every field against the document.</div>' + (w.length ? '<div class="warn">'+w.join('<br>')+'</div>' : '') + extra;
+  paintNameCheck(); paintDocs();
+}
+// ---- US travel dates -> suggested date of entry ------------------------------------------------------------------
+var MON = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12};
+function _mk(y,m,d){ y=+y; if(y<100) y += (y>50?1900:2000); var t=new Date(Date.UTC(y,m-1,d)); return (t.getUTCMonth()==m-1 && t.getUTCDate()==+d) ? t : null }
+function _iso(t){ return t.toISOString().slice(0,10) }
+function findDates(line, fmt, notes){
+  var out=[], re=/(\d{4})-(\d{1,2})-(\d{1,2})|(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})|(\d{1,2})(?:st|nd|rd|th)?[\s\-]+([A-Za-z]{3,9})[\s\-,]+(\d{2,4})|([A-Za-z]{3,9})[\s\-]+(\d{1,2})(?:st|nd|rd|th)?,?[\s\-]+(\d{2,4})/g, m;
+  while((m=re.exec(line))){
+    var t=null;
+    if(m[1]) t=_mk(m[1],+m[2],+m[3]);
+    else if(m[4]){ var a=+m[4], b=+m[5];
+      if(fmt=='dmy' && b>12 && a<=12){ t=_mk(m[6],a,b); notes.push('"'+m[0]+'" only works as month/day – read as US format') }
+      else if(fmt=='mdy' && a>12 && b<=12){ t=_mk(m[6],b,a); notes.push('"'+m[0]+'" only works as day/month – read as UK format') }
+      else t = fmt=='dmy' ? _mk(m[6],b,a) : _mk(m[6],a,b); }
+    else if(m[7]){ var mo=MON[m[8].slice(0,4).toLowerCase()]||MON[m[8].slice(0,3).toLowerCase()]; if(mo) t=_mk(m[9],mo,+m[7]) }
+    else if(m[10]){ var mo2=MON[m[10].slice(0,4).toLowerCase()]||MON[m[10].slice(0,3).toLowerCase()]; if(mo2) t=_mk(m[12],mo2,+m[11]) }
+    if(t) out.push(t); else { notes.push('"'+m[0]+'" is not a real date – that line was skipped'); out.bad = true }
+  }
+  return out;
+}
+function travelCheck(){
+  var ta=$('us_travel'), out=$('travel_out'); if(!ta||!out) return;
+  var fmtEl=document.querySelector('[name=tfmt]:checked'), fmt=fmtEl?fmtEl.value:'dmy';
+  var trips=[], errs=[], notes=[], today=new Date(), dobv=$('dob').value, dob=dobv?new Date(dobv+'T00:00:00Z'):null;
+  ta.value.split(/\n+/).forEach(function(line, i){
+    var L=line.trim(); if(!L) return;
+    var ds=findDates(L, fmt, notes), low=L.toLowerCase();
+    if(ds.bad) return;
+    if(!ds.length){ notes.push('Line '+(i+1)+': no date found – "'+L.slice(0,40)+'"'); return }
+    if(ds.length==1 && /(depart|left|leave|exit|flew out|out of)/.test(low) && trips.length && !trips[trips.length-1].out){ trips[trips.length-1].out=ds[0]; return }
+    trips.push({line:i+1, inn:ds[0], out:ds[1]||null});
+    if(ds.length>2) notes.push('Line '+(i+1)+': more than two dates – only the first two were used');
+  });
+  if(!trips.length){ out.innerHTML = notes.length ? '<div class="warn">'+notes.map(esc).join('<br>')+'</div>' : ''; return }
+  var sorted=trips.slice().sort(function(a,b){return a.inn-b.inn});
+  sorted.forEach(function(t, i){
+    if(t.out && t.out < t.inn) errs.push('Trip on line '+t.line+': left ('+usd(_iso(t.out))+') BEFORE arriving ('+usd(_iso(t.inn))+').');
+    if(t.inn > today) errs.push('Trip on line '+t.line+': arrival '+usd(_iso(t.inn))+' is in the future.');
+    if(t.out && t.out > today) notes.push('Trip on line '+t.line+': departure '+usd(_iso(t.out))+' is in the future – still in the U.S.?');
+    if(dob && t.inn < dob) errs.push('Trip on line '+t.line+': arrival is before the date of birth.');
+    if(t.out && (t.out - t.inn)/864e5 > 365) notes.push('Trip on line '+t.line+': longer than a year – check the dates.');
+    var nx=sorted[i+1]; if(nx && t.out && nx.inn < t.out) errs.push('Trips on lines '+t.line+' and '+nx.line+' overlap – arrived again before leaving.');
+    if(nx && !t.out) notes.push('Trip on line '+t.line+' has no departure date but a later trip follows.');
+  });
+  var latest=sorted.filter(function(t){ return t.inn<=today && !(t.out && t.out < t.inn) }).pop();
+  var rows=sorted.map(function(t){ var days=(t.out && t.out>=t.inn)?Math.round((t.out-t.inn)/864e5)+1:''; return '<tr><td>'+usd(_iso(t.inn))+'</td><td>'+(t.out?usd(_iso(t.out)):'<span class="muted">—</span>')+'</td><td>'+days+'</td></tr>' }).join('');
+  var entry=document.querySelector('[name=us_entry]').value, sug='';
+  if(latest){ var li=_iso(latest.inn);
+    sug = entry==li ? '<div class="ok" style="margin:6px 0">✓ Date of entry matches the latest arrival ('+usd(li)+').</div>' :
+      '<div class="sug">Latest U.S. arrival: <b>'+usd(li)+'</b> '+(entry?'(the form has '+usd(entry)+') ':'')+
+      '<button type="button" class="btn small" onclick="document.querySelector(\'[name=us_entry]\').value=\''+li+'\';travelCheck()">Use as date of entry</button></div>' }
+  out.innerHTML = '<table class="trips"><tr><th>Arrived (MM/DD/YYYY)</th><th>Left</th><th>Days</th></tr>'+rows+'</table>'+sug+
+    (errs.length?'<div class="bad">⚠ '+errs.map(esc).join('<br>⚠ ')+'</div>':'')+(notes.length?'<div class="warn">'+notes.map(esc).join('<br>')+'</div>':'');
 }
 function beforeSubmit(){
   var p = [];
@@ -1640,10 +2140,15 @@ function beforeSubmit(){
     if(!document.querySelector('[name=m_confirm]').checked) p.push('Manual filing: tick the confirmation box.');
   }
   if(p.length){ alert(p.join('\n')); return false }
+  if(paintNameCheck() && !confirm('Some documents are NOT in the name of '+($('first').value+' '+$('last').value).trim()+' (see the red Name check box in step 1).\n\nCreate the W-7 anyway?')) return false;
   return true;
 }
 {% if not prefill %}syncCoa();{% else %}showExtras();{% endif %}
-$('wf').addEventListener('change', paintDocs); setManual(on('manual_on')); mailChoice();
+$('wf').addEventListener('change', function(){ try{ paintDocs() }catch(e){} });
+$('manual_on').addEventListener('change', function(){ setManual(this.checked) });
+['first','last'].forEach(function(id){ $(id).addEventListener('input', paintNameCheck) });
+function syncAll(){ try{ setManual(on('manual_on')) }catch(e){} try{ mailChoice() }catch(e){} try{ showExtras() }catch(e){} try{ travelCheck() }catch(e){} }
+syncAll(); window.addEventListener('pageshow', syncAll);
 </script>
 {% endblock %}"""
 
