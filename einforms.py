@@ -1,5 +1,5 @@
 """
-EIN Filing tab (v40f – Articles only, Telnyx fax) – IRS Form SS-4 (Rev. 12-2025), prepared by Startitup Global Inc and faxed to the IRS.
+EIN Filing tab (v40g – Articles only, Telnyx fax) – IRS Form SS-4 (Rev. 12-2025), prepared by Startitup Global Inc and faxed to the IRS.
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config, send_email).
 Nothing in the mail-sorting, Company forms, ITIN or Formations tabs is touched.
@@ -1420,24 +1420,51 @@ def _poll_loop():
         time.sleep(15 * 60)
 
 
+_SEND_LOCKS: dict = {}
+MIN_BDAYS_BEFORE_REREQUEST = 4      # IRS: EIN by fax generally within 4 business days
+
+
 @bp.post("/ein/<job>/fax")
 def ein_fax(job):
     d = _job_dir(job)
-    m = load_meta(d)
     kind = request.form.get("kind", "first")
-    if kind == "first" and any(x.get("status") != "failed" for x in m.get("faxes", [])):
-        kind = "manual"
-    if kind == "first" and not request.form.get("confirm_first"):
-        flash("Tick the box to confirm the SS-4 has been checked before sending it to the IRS.")
+    if kind not in ("first", "manual"):
+        abort(400)
+    lock = _SEND_LOCKS.setdefault(job, threading.Lock())
+    if not lock.acquire(blocking=False):            # a double click while the first send is still running
+        flash("This fax is already being sent – nothing was sent twice.")
         return redirect(f"/ein/{job}#fax")
     try:
-        e = send_job_fax(d, m, kind)
-        flash(f"{FOLLOWUP_KINDS[kind]} queued to {e['to']}. Status updates automatically "
-              f"(or press “Check status now”).")
-    except FaxError as ex:
-        flash(f"Fax not sent: {ex}")
-    save_meta(d, m)
-    return redirect(f"/ein/{job}#fax")
+        m = load_meta(d)                            # re-read inside the lock
+        fx = m.get("faxes", [])
+        good = [x for x in fx if x.get("status") != "failed"]
+        if any(x.get("status") in ("queued", "sending") for x in fx) or (good and _mins_since(good[0]["t"]) < 15):
+            flash("A fax for this application was sent in the last few minutes – nothing was sent again.")
+            return redirect(f"/ein/{job}#fax")
+        if kind == "first":
+            if good:                                # never turn a repeated "Send" into a second fax
+                flash(f"The SS-4 was already faxed on {_mdy(good[-1]['t'][:10])} – not sent again. "
+                      "Use “Re-request EIN now” only if the EIN has not arrived.")
+                return redirect(f"/ein/{job}#fax")
+            if not request.form.get("confirm_first"):
+                flash("Tick the box to confirm the SS-4 has been checked before sending it to the IRS.")
+                return redirect(f"/ein/{job}#fax")
+        if kind == "manual" and good and _bdays(good[0]["t"]) < MIN_BDAYS_BEFORE_REREQUEST \
+                and not request.form.get("early"):
+            flash(f"Not sent: the last fax went out {_bdays(good[0]['t'])} business day(s) ago. The IRS usually "
+                  f"replies within {MIN_BDAYS_BEFORE_REREQUEST} business days – re-requesting earlier risks a "
+                  "second EIN. Tick “send anyway” if you really need to.")
+            return redirect(f"/ein/{job}#fax")
+        try:
+            e = send_job_fax(d, m, kind)
+            flash(f"{FOLLOWUP_KINDS[kind]} queued to {e['to']}. Status updates automatically "
+                  f"(or press “Check status now”).")
+        except FaxError as ex:
+            flash(f"Fax not sent: {ex}")
+        save_meta(d, m)
+        return redirect(f"/ein/{job}#fax")
+    finally:
+        lock.release()
 
 
 @bp.post("/ein/<job>/autofollow")
@@ -1775,12 +1802,13 @@ If a member is a company, also add the person who controls it. Add or correct na
 <div class="stat"><b>{{ ag.next|ukdate if ag.next and not m.ein else '–' }}</b>next follow-up</div></div>{% endif %}
 {% set okfax = (m.faxes or [])|rejectattr('status','equalto','failed')|list %}
 {% if not okfax %}
-<form method="post" action="/ein/{{job}}/fax"><input type="hidden" name="kind" value="first">
+<form method="post" action="/ein/{{job}}/fax" onsubmit="return oneSend(this)"><input type="hidden" name="kind" value="first">
 <label class="tick"><input type="checkbox" name="confirm_first"><span>I have checked the SS-4 – send the fax pack (cover + signed SS-4) to the IRS on <b>{{a.fax_to}}</b>.</span></label>
 <button class="btn" {% if not fp_on %}disabled{% endif %}>📠 Send to IRS by fax</button></form>
 {% elif not m.ein %}
 <div class="btnrow">
-<form method="post" action="/ein/{{job}}/fax" onsubmit="return confirm('Send a follow-up request to the IRS now? It goes with a cover letter saying it is NOT a new application.')"><input type="hidden" name="kind" value="manual">
+<form method="post" action="/ein/{{job}}/fax" onsubmit="return confirm('Send a follow-up request to the IRS now? It goes with a cover letter saying it is NOT a new application.') && oneSend(this)"><input type="hidden" name="kind" value="manual">
+<label style="display:inline-flex;gap:6px;align-items:center;font-size:12px;margin-right:8px"><input type="checkbox" name="early" style="width:14px;height:14px">send anyway, even if the last fax was less than 4 business days ago</label>
 <button class="btn" {% if not fp_on %}disabled{% endif %}>🔁 Re-request EIN now</button></form>
 <form method="post" action="/ein/fax/poll"><input type="hidden" name="back" value="/ein/{{job}}#fax"><button class="btn secondary">Check status now</button></form>
 <form method="post" action="/ein/{{job}}/autofollow"><input type="hidden" name="on" value="{{ '1' if m.auto_followup == false else '' }}">
@@ -1874,6 +1902,7 @@ function faxForLine6(){
   sel.value = (US_ST.test(v) || US_C.test(v)) ? '{{IRS_FAX.us[0]}}' : '{{IRS_FAX.intl[0]}}';
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function oneSend(f){ const b = f.querySelector('button'); if(b.disabled) return false; b.disabled = true; b.textContent = 'Sending…'; return true; }
 let LAST = null, SKIP = [];
 function useOne(i, b){ const [k,c,v] = SKIP[i]; setv(k, v, true); syncMembers(); showX(); b.disabled = true; }
 async function readAI(){
