@@ -1,5 +1,5 @@
 """
-EIN Filing tab (v40d – Telnyx fax) – IRS Form SS-4 (Rev. 12-2025), prepared by Startitup Global Inc and faxed to the IRS.
+EIN Filing tab (v40f – Articles only, Telnyx fax) – IRS Form SS-4 (Rev. 12-2025), prepared by Startitup Global Inc and faxed to the IRS.
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config, send_email).
 Nothing in the mail-sorting, Company forms, ITIN or Formations tabs is touched.
@@ -86,7 +86,8 @@ ACTIVITY = {  # line 16: key -> (label, checkbox index)
 PRESETS = {
     "foreign_smllc": "Single-member LLC – foreign owner (Form 5472)",
     "us_smllc": "Single-member LLC – US owner",
-    "mmllc": "Multi-member LLC (partnership)",
+    "mmllc": "Multi-member LLC – partnership (US and/or foreign members)",
+    "llc_corp": "LLC taxed as a corporation (Form 8832 / 2553 election)",
     "ccorp": "Corporation (C corp, Form 1120)",
     "custom": "Custom – I'll set every line myself",
 }
@@ -173,6 +174,11 @@ def blank_app(s: dict) -> dict:
 def apply_preset(a: dict, p: str):
     """Sets lines 8a-8c, 9a, 10, 7b and the signer's title for the usual cases (IRS SS-4 instructions Rev. 12-2025)."""
     a["preset"] = p
+    if p != "foreign_smllc":
+        if a.get("entity_other", "").startswith("Foreign-owned"):
+            a["entity_other"] = ""
+        if a.get("reason_other", "").startswith("Foreign-owned"):
+            a["reason_other"] = ""
     if p == "foreign_smllc":
         a.update(is_llc="yes", llc_members="1", llc_us="yes", entity="other",
                  entity_other="Foreign-owned U.S. disregarded entity-Form 5472", reason="other",
@@ -180,13 +186,21 @@ def apply_preset(a: dict, p: str):
         if not a.get("rp_tin"):
             a["rp_tin"] = "Foreign"
     elif p == "us_smllc":
-        a.update(is_llc="yes", llc_members="1", llc_us="yes", entity="sole", reason="started", signer_title="Sole Member")
+        # SS-4 instructions 12/2025: single-member LLC = disregarded entity -> 9a "Other" + "Disregarded entity"
+        a.update(is_llc="yes", llc_members="1", llc_us="yes", entity="other", entity_other="Disregarded entity",
+                 reason="started", signer_title="Sole Member")
         if a.get("rp_tin", "").lower() == "foreign":
             a["rp_tin"] = ""
     elif p == "mmllc":
         a.update(is_llc="yes", llc_us="yes", entity="partnership", reason="started", signer_title="Member")
         if not a.get("llc_members") or a.get("llc_members") == "1":
             a["llc_members"] = "2"
+    elif p == "llc_corp":
+        # LLC that elected corporate tax treatment: 9a Corporation + form number (1120 or 1120-S)
+        a.update(is_llc="yes", llc_us="yes", entity="corp", corp_form=a.get("corp_form") or "1120", reason="started",
+                 signer_title="Managing Member")
+        if not a.get("llc_members"):
+            a["llc_members"] = "1"
     elif p == "ccorp":
         a.update(is_llc="no", llc_members="", llc_us="", entity="corp", corp_form="1120", reason="started",
                  signer_title="President")
@@ -293,7 +307,8 @@ def _ai_json(system: str, images: list[tuple[str, bytes]], text: str, max_tokens
     return json.loads(mm.group(0))
 
 
-READ_SYSTEM = """You read company formation documents for a US tax agent preparing IRS Form SS-4 (EIN application).
+READ_SYSTEM = """You read company formation documents (usually only the state-issued Articles of Organization / Certificate of
+Formation) for a US tax agent preparing IRS Form SS-4 (EIN application).
 The documents can be: Certificate/Articles of Formation or Organization, Articles of Incorporation, Operating Agreement,
 Statement of Information / annual report, registered agent receipt, members' passports or ID cards, proof of address.
 Read ONLY what is printed. Never invent. Unknown values are "". Dates as YYYY-MM-DD. Return ONLY one JSON object:
@@ -305,6 +320,7 @@ Read ONLY what is printed. Never invent. Unknown values are "". Dates as YYYY-MM
  "principal_address": "",          // principal office / mailing address of the company as printed (one line)
  "registered_agent_address": "",   // registered agent / registered office address (one line)
  "members": [{"name": "", "role": "",          // e.g. "Member", "Managing Member", "Manager", "Director", "President"
+              "type": "person" | "company",    // "company" when the member/owner is itself a company or other entity
               "ownership_pct": "",             // e.g. "100" if printed
               "address": "",                   // residential address if printed (one line)
               "country": "",                   // country of residence / nationality, short English name
@@ -314,8 +330,14 @@ Read ONLY what is printed. Never invent. Unknown values are "". Dates as YYYY-MM
  "products_services": "",          // principal products or services if stated
  "fiscal_year_end_month": "",      // e.g. "December" if stated
  "county": "",                     // county of the principal US address – you MAY work this out from a US city/ZIP
+ "operated_from_country": "",      // city and country where the business is actually run/managed, ONLY if a document
+                                   // (e.g. the order form / questionnaire or operating agreement) says so
  "notes": ""}                      // anything the preparer should check (conflicts between documents, unreadable parts)
-List every member/owner/director/incorporator who is a person; use the operating agreement for ownership if present.
+List every member/owner (people AND companies); for a corporation also its directors/officers. Use the operating
+agreement for ownership if present. If a member is a company, ALSO add the individual(s) shown as controlling it
+(director, manager, authorised signatory) with "type": "person" and role "Controls <company name>".
+Do not list the registered agent or a filing service/organizer company as a member. An ORGANIZER or INCORPORATOR who
+signed the filing is NOT a member unless the document expressly calls them a member/manager/owner – leave them out.
 A passport or ID card gives a member's exact name, nationality and (if printed) address – merge it with the same
 person from the other documents instead of listing them twice."""
 
@@ -340,18 +362,99 @@ def _state_abbr(name: str) -> str:
     return ""
 
 
+def _member_kind(p: dict) -> str:
+    t = str(p.get("type") or "").lower()
+    role = str(p.get("role") or "").lower()
+    if "control" in role or (t == "person" and re.search(r"\b(director|officer|signatory)\b", role)
+                             and "member" not in role):
+        return "controller"
+    if t in ("company", "entity", "corporation") or re.search(r"\b(ltd|limited|llc|inc|corp|gmbh|fze|fzco|plc|pvt|s\.?a\.?|b\.?v\.?)\b\.?$",
+                                                            str(p.get("name") or "").lower()):
+        return "company"
+    return "person"
+
+
+def is_us_location(s: str) -> bool:
+    s = s or ""
+    if re.search(r"\b(united states|usa|u\.s\.a?\.?)\b", s, re.I):
+        return True
+    return bool(re.search(r"\b(" + "|".join(US_STATES) + r")\b", s)) or \
+        any(v.lower() in s.lower() for v in US_STATES.values())
+
+
+def app_warnings(a: dict, members: list[dict]) -> list[str]:
+    """Non-blocking consistency checks shown above the SS-4 lines."""
+    w = []
+    loc = a.get("county_state", "")
+    us_loc = is_us_location(loc) if loc else None
+    if us_loc is True and a.get("fax_to") != IRS_FAX["us"][0]:
+        w.append(f"Line 6 shows a US location ({loc}), so the company has a US principal place of business – the IRS "
+                 f"instructions say to fax {IRS_FAX['us'][0]}, not {a.get('fax_to')}. If the business is really run "
+                 "from abroad, put the city and country on line 6 instead.")
+    if us_loc is False and a.get("fax_to") == IRS_FAX["us"][0]:
+        w.append(f"Line 6 is outside the US ({loc}) – fax {IRS_FAX['intl'][0]} (or {IRS_FAX['intl_us'][0]} if "
+                 "faxing from inside the US).")
+    owners = [x for x in members if x.get("kind", "person") in ("person", "company")]
+    people = [x for x in members if x.get("kind", "person") in ("person", "controller")]
+    if a.get("is_llc") == "yes" and owners and a.get("llc_members") and a["llc_members"].isdigit() \
+            and int(a["llc_members"]) != len(owners):
+        w.append(f"Line 8b says {a['llc_members']} member(s) but {len(owners)} member(s) are listed in section 3.")
+    if a.get("preset") in ("foreign_smllc", "us_smllc") and len(owners) > 1:
+        w.append("More than one member is listed – a single-member preset is selected. A multi-member LLC is a "
+                 "partnership by default (choose \"Multi-member LLC\").")
+    if a.get("preset") == "mmllc" and len(owners) == 1:
+        w.append("Only one member is listed – a single-member LLC is a disregarded entity, not a partnership.")
+    if any(x.get("kind") == "company" for x in owners) and not people:
+        w.append("A member is a company – add the individual who controls it (Type: \"Controls a company member\"). "
+                 "The responsible party on line 7a must be a person, not a company.")
+    if a.get("preset") == "foreign_smllc" and owners and owners[0].get("country", "").lower() in (
+            "united states", "usa", "us", "u.s."):
+        w.append("The single member looks like a US person – choose \"Single-member LLC – US owner\" "
+                 "(no Form 5472 wording) and enter their SSN/ITIN on line 7b.")
+    if a.get("rp_tin", "").lower() == "foreign" and any(x.get("country", "").lower() in ("united states", "usa", "us")
+                                                         for x in people if x.get("name") == a.get("rp_name")):
+        w.append("Line 7b says Foreign but the responsible party looks like a US person – enter their SSN or ITIN.")
+    return w
+
+
+def hand_todo(a: dict, members: list[dict]) -> list[str]:
+    """What the Articles of Organization did not give us – shown as a short checklist."""
+    t = []
+    if not [x for x in members if x.get("kind", "person") in ("person", "controller")]:
+        t.append("Section 3 – the member(s): full name as on the passport, and country "
+                 "(Articles usually don't name the members)")
+    if not a.get("rp_name"):
+        t.append("Line 7a – responsible party (the member who owns/controls the company)")
+    if a.get("rp_name") and not a.get("rp_tin"):
+        t.append("Line 7b – SSN/ITIN of the responsible party, or \"Foreign\"")
+    if not a.get("mail_addr"):
+        t.append("Lines 4a–4b – mailing address where the IRS should send letters")
+    if not a.get("county_state"):
+        t.append("Line 6 – where the business is really run (US county & state, or city & country)")
+    if not a.get("activity"):
+        t.append("Line 16 – principal activity")
+    if not a.get("products"):
+        t.append("Line 17 – what the company sells / does")
+    if not a.get("start_date"):
+        t.append("Line 11 – date started (usually the filing date on the Articles)")
+    return t
+
+
 def suggestions_from_ai(ai: dict, a: dict) -> tuple[dict, list[dict], str]:
     """Turns the AI reading into SS-4 values. Returns (values, members, preset)."""
     members = []
     for p in ai.get("members") or []:
         if isinstance(p, dict) and str(p.get("name") or "").strip():
             members.append({"name": str(p.get("name")).strip(), "role": str(p.get("role") or "").strip(),
+                            "kind": _member_kind(p),
                             "country": str(p.get("country") or "").strip(), "pct": str(p.get("ownership_pct") or "").strip(),
                             "us": p.get("us_person"), "tin": str(p.get("tin") or "").strip(),
                             "address": str(p.get("address") or "").strip()})
     kind = str(ai.get("entity_kind") or "").lower()
-    n = len(members)
-    any_us = any(m["us"] is True for m in members)
+    owners = [m for m in members if m["kind"] in ("person", "company")]
+    people = [m for m in members if m["kind"] in ("person", "controller")]
+    n = len(owners)
+    any_us = any(m["us"] is True for m in owners)
     if kind == "corporation":
         preset = "ccorp"
     elif kind == "llc" or "llc" in str(ai.get("legal_name") or "").lower():
@@ -362,7 +465,8 @@ def suggestions_from_ai(ai: dict, a: dict) -> tuple[dict, list[dict], str]:
     apply_preset(v, preset)
     v["legal_name"] = str(ai.get("legal_name") or "").strip()
     v["trade_name"] = str(ai.get("trade_name") or "").strip()
-    addr = str(ai.get("principal_address") or "").strip() or str(ai.get("registered_agent_address") or "").strip()
+    principal = str(ai.get("principal_address") or "").strip()
+    addr = principal or str(ai.get("registered_agent_address") or "").strip()
     if addr:
         v["mail_addr"], v["mail_city"] = _addr_split(addr)
     st = str(ai.get("state_of_formation") or "").strip()
@@ -370,18 +474,31 @@ def suggestions_from_ai(ai: dict, a: dict) -> tuple[dict, list[dict], str]:
     ab = _state_abbr(st)
     m_st = re.search(r"\b([A-Z]{2})\s+\d{5}", v.get("mail_city", ""))
     st_for_county = (m_st.group(1) if m_st else "") or ab
-    if county:
+    run_from = str(ai.get("operated_from_country") or "").strip()
+    v["county_state"] = ""
+    if run_from and not is_us_location(run_from) and run_from.lower() not in ("us", "u.s."):
+        v["county_state"] = run_from                 # business run from abroad -> city/country (staff add the city)
+    elif county and principal:                       # only from a real principal office, never the registered agent
         if "county" not in county.lower() and "parish" not in county.lower():
             county += " County"
         v["county_state"] = f"{county}, {st_for_county}" if st_for_county else county
-    if members:
-        lead = next((m for m in members if "manag" in m["role"].lower()), members[0])
+    if v["county_state"]:
+        v["fax_to"] = IRS_FAX["us"][0] if is_us_location(v["county_state"]) else IRS_FAX["intl"][0]
+    if people:
+        # responsible party must be an individual: managing member > any person member > controller of a company member
+        lead = next((m for m in people if m["kind"] == "person" and "manag" in m["role"].lower()), None) or \
+            next((m for m in people if m["kind"] == "person"), None) or people[0]
         v["rp_name"] = lead["name"]
         v["rp_tin"] = lead["tin"] or ("" if lead["us"] is True else "Foreign")
         v["signer"] = lead["name"]
-        if preset in ("mmllc",):
-            v["llc_members"] = str(n)
-    if preset == "ccorp":
+        if lead["kind"] == "person" and "manag" in lead["role"].lower() and preset in ("mmllc", "llc_corp"):
+            v["signer_title"] = "Managing Member"
+        if lead["kind"] == "controller":
+            co = next((m["name"] for m in owners if m["kind"] == "company"), "")
+            v["signer_title"] = f"Director of {co}, Sole Member" if (co and n == 1) else (f"Director of {co}, Member" if co else "Director")
+    if preset in ("mmllc", "llc_corp") and n:
+        v["llc_members"] = str(n)
+    if preset in ("ccorp", "llc_corp"):
         v["inc_state"] = st if ab else ""
         v["inc_country"] = "" if ab else st
     v["start_date"] = str(ai.get("formation_date") or "").strip()[:10]
@@ -395,7 +512,7 @@ def suggestions_from_ai(ai: dict, a: dict) -> tuple[dict, list[dict], str]:
         v["started_type"] = purpose[:40]
     vals = {k: v[k] for k in FIELDS if k in v and str(v.get(k, "")) != "" and k not in
             ("designee_name", "designee_phone", "designee_fax", "designee_address", "applicant_phone",
-             "applicant_fax", "fax_to", "sig_mode", "use_designee", "sign_date", "client_email", "notes", "sig_ok")}
+             "applicant_fax", "sig_mode", "use_designee", "sign_date", "client_email", "notes", "sig_ok")}
     return vals, members, preset
 
 
@@ -600,6 +717,7 @@ def form_to_app(f, a_old: dict) -> tuple[dict, list[dict]]:
         nm = (f.get(f"m_name_{i}") or "").strip()
         if nm:
             members.append({"name": nm, "role": (f.get(f"m_role_{i}") or "").strip(),
+                            "kind": (f.get(f"m_kind_{i}") or "person"),
                             "country": (f.get(f"m_country_{i}") or "").strip(),
                             "pct": (f.get(f"m_pct_{i}") or "").strip()})
     return a, members
@@ -634,8 +752,11 @@ def check_app(a: dict, members: list[dict]) -> list[str]:
     if a["sig_mode"] == "typed" and a["signer"] and not a["sig_ok"]:
         e.append("Tick the box confirming the member has approved the SS-4 and the typed signature "
                  "(or choose \"Leave unsigned\").")
-    if a["signer"] and members and a["signer"] not in [x["name"] for x in members]:
-        e.append("The signer must be one of the members listed.")
+    people = [x["name"] for x in members if x.get("kind", "person") in ("person", "controller")]
+    if a["signer"] and members and a["signer"] not in people:
+        e.append("The signer must be a person listed in section 3 (not a company).")
+    if a["rp_name"] and members and a["rp_name"] not in people:
+        e.append("Line 7a – the responsible party must be an individual listed in section 3, not a company.")
     return e
 
 
@@ -692,6 +813,8 @@ def ein_job(job):
                                   PRESETS=PRESETS, MONTHS=MONTHS, IRS_FAX=IRS_FAX, STATUS=STATUS, has_ai=has_ai,
                                   errors=m.pop("_errors", None), alert=job_alert(m), mdy=_mdy,
                                   ag=ageing(m), fp_on=fax_ready(), KINDS=FOLLOWUP_KINDS, s=load_settings(), e164=e164,
+                                  warns=app_warnings(m["a"], m.get("members", [])),
+                                  todo=hand_todo(m["a"], m.get("members", [])),
                                   poll=_POLL)
 
 
@@ -1494,8 +1617,9 @@ table.mem input{padding:6px}
 </div>
 
 <div class="card" id="docs"><h2>1. Company documents</h2>
-<p class="muted">Upload everything you have: Certificate / Articles of Formation (or Incorporation), Operating Agreement,
-the members' passports or ID cards, registered agent receipt. PDFs or photos.</p>
+<p class="muted">Upload the <b>Articles of Organization</b> (Certificate of Formation / Articles of Incorporation) the state issued
+at incorporation – PDF or photo. The AI fills everything it can from it; anything the Articles don't show is listed below
+the form as <b>“Fill by hand”</b>.</p>
 {% if m.docs %}<table><tr><th>Document</th><th>Added</th><th></th></tr>
 {% for x in m.docs %}<tr><td><a href="/ein/{{job}}/doc/{{loop.index0}}" target="_blank">{{x.orig}}</a></td><td>{{x.t|ukdate}}</td>
 <td><form method="post" action="/ein/{{job}}/doc/{{loop.index0}}/remove" onsubmit="return confirm('Remove this document?')"><button class="btn small secondary">Remove</button></form></td></tr>{% endfor %}</table>{% endif %}
@@ -1515,10 +1639,12 @@ the members' passports or ID cards, registered agent receipt. PDFs or photos.</p
 <div class="hint">Everything below can still be changed by hand.</div></div>
 
 <div class="card"><h2>3. Members</h2>
-<p class="muted">Filled from the documents. The signer and the responsible party are picked from this list. Add or correct names by hand.</p>
-<table class="mem"><tr><th>Full name</th><th>Role</th><th>Country</th><th>% owned</th></tr>
+<p class="muted">Filled from the documents. The signer and the responsible party (line 7a) are picked from the <b>people</b> in this list.
+If a member is a company, also add the person who controls it. Add or correct names by hand.</p>
+<table class="mem"><tr><th>Full name</th><th>Type</th><th>Role</th><th>Country</th><th>% owned</th></tr>
 {% for i in range(8) %}{% set x = m.members[i] if i < m.members|length else {} %}
 <tr class="mrow{% if i >= (m.members|length + 1) and i > 1 %} hide{% endif %}"><td><input type="text" name="m_name_{{i}}" value="{{x.name}}" oninput="syncMembers()"></td>
+<td><select name="m_kind_{{i}}" onchange="syncMembers()" style="padding:6px">{% for k,v in [('person','Person – member'),('company','Company – member'),('controller','Person – controls a company member')] %}<option value="{{k}}" {% if (x.kind or 'person')==k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></td>
 <td><input type="text" name="m_role_{{i}}" value="{{x.role}}" placeholder="Member"></td>
 <td><input type="text" name="m_country_{{i}}" value="{{x.country}}"></td>
 <td><input type="text" name="m_pct_{{i}}" value="{{x.pct}}" style="max-width:80px"></td></tr>{% endfor %}</table>
@@ -1526,6 +1652,9 @@ the members' passports or ID cards, registered agent receipt. PDFs or photos.</p
 </div>
 
 <div class="card"><h2>4. Form SS-4 – every line</h2>
+{% if todo %}<div class="box" style="border-color:#f59e0b;background:#fffbeb"><b>Fill by hand</b> (not on the Articles):
+<ul style="margin:6px 0 0 18px;padding:0">{% for t in todo %}<li>{{t}}</li>{% endfor %}</ul></div>{% endif %}
+{% for w in warns %}<div class="flash">⚠ {{w}}</div>{% endfor %}
 <div class="g2">
 <div><label><span class="ln">1</span>Legal name of entity</label><input type="text" name="legal_name" value="{{a.legal_name}}"></div>
 <div><label><span class="ln">2</span>Trade name (if different)</label><input type="text" name="trade_name" value="{{a.trade_name}}"></div>
@@ -1542,7 +1671,8 @@ the members' passports or ID cards, registered agent receipt. PDFs or photos.</p
 <button type="button" class="btn small secondary" onclick="addr('5904 Jessamine St, Ste A15','Houston, TX 77081','Harris County, TX')">Houston office</button>
 <button type="button" class="btn small secondary" onclick="addr('140 E Broadway Ave, Suite 25, #804','Jackson, WY 83001','Teton County, WY')">Wyoming – Jackson office</button></div>
 <div class="g2">
-<div><label><span class="ln">6</span>County and state where principal business is located</label><input type="text" name="county_state" value="{{a.county_state}}"></div>
+<div><label><span class="ln">6</span>County and state where principal business is located</label><input type="text" name="county_state" value="{{a.county_state}}" onchange="faxForLine6()">
+<div class="hint">The company's real physical location. US (e.g. "Teton County, WY") → IRS fax 855-641-6935. Run from abroad → city and country (e.g. "Dubai, United Arab Emirates") → fax 304-707-9471. The fax number in section 6 follows this automatically.</div></div>
 <div><label><span class="ln">7a</span>Name of responsible party</label><select name="rp_name" id="rp_name" data-v="{{a.rp_name}}" onchange="this.dataset.v=this.value"></select>
 <div class="hint">Must be an individual – usually the (managing) member.</div></div>
 <div><label><span class="ln">7b</span>SSN, ITIN, or EIN</label><input type="text" name="rp_tin" value="{{a.rp_tin}}" maxlength="11">
@@ -1688,9 +1818,10 @@ the members' passports or ID cards, registered agent receipt. PDFs or photos.</p
 const F = document.getElementById('ss4');
 const PRESET_VALUES = {
  foreign_smllc:{is_llc:'yes',llc_members:'1',llc_us:'yes',entity:'other',entity_other:'Foreign-owned U.S. disregarded entity-Form 5472',reason:'other',reason_other:'Foreign-owned U.S. disregarded entity filing Form 5472',signer_title:'Sole Member'},
- us_smllc:{is_llc:'yes',llc_members:'1',llc_us:'yes',entity:'sole',reason:'started',signer_title:'Sole Member'},
- mmllc:{is_llc:'yes',llc_us:'yes',entity:'partnership',reason:'started',signer_title:'Member'},
- ccorp:{is_llc:'no',llc_members:'',entity:'corp',corp_form:'1120',reason:'started',signer_title:'President'},
+ us_smllc:{is_llc:'yes',llc_members:'1',llc_us:'yes',entity:'other',entity_other:'Disregarded entity',reason:'started',reason_other:'',signer_title:'Sole Member'},
+ llc_corp:{is_llc:'yes',llc_us:'yes',entity:'corp',corp_form:'1120',reason:'started',entity_other:'',reason_other:'',signer_title:'Managing Member'},
+ mmllc:{is_llc:'yes',llc_us:'yes',entity:'partnership',reason:'started',entity_other:'',reason_other:'',signer_title:'Member'},
+ ccorp:{is_llc:'no',llc_members:'',entity:'corp',corp_form:'1120',reason:'started',entity_other:'',reason_other:'',signer_title:'President'},
  custom:{}};
 function setv(k, v, mark){
   const els = F.querySelectorAll('[name="'+k+'"]'); if(!els.length) return;
@@ -1709,7 +1840,8 @@ function applyPreset(p){
   const tin = F.querySelector('[name=rp_tin]');
   if(p==='foreign_smllc' && !tin.value) tin.value='Foreign';
   if(p==='us_smllc' && tin.value.toLowerCase()==='foreign') tin.value='';
-  if(p==='mmllc'){ const n = memberNames().length; F.querySelector('[name=llc_members]').value = String(Math.max(n,2)); }
+  if(p==='mmllc'){ F.querySelector('[name=llc_members]').value = String(Math.max(ownerCount(),2)); }
+  if(p==='llc_corp'){ F.querySelector('[name=llc_members]').value = String(Math.max(ownerCount(),1)); }
   showX(); sigPrev();
 }
 function showX(){
@@ -1719,7 +1851,8 @@ function showX(){
   document.querySelectorAll('.act').forEach(el=>el.classList.toggle('hide', !el.classList.contains('act-'+act)));
   document.getElementById('prior_box').classList.toggle('hide', getv('prior_ein')!=='yes');
 }
-function memberNames(){ return [...document.querySelectorAll('[name^=m_name_]')].map(x=>x.value.trim()).filter(Boolean); }
+function memberNames(){ return [...document.querySelectorAll('[name^=m_name_]')].filter(x=>{const k=F.querySelector('[name=m_kind_'+x.name.split('_')[2]+']'); return !k || k.value!=='company';}).map(x=>x.value.trim()).filter(Boolean); }
+function ownerCount(){ return [...document.querySelectorAll('[name^=m_name_]')].filter(x=>{const k=F.querySelector('[name=m_kind_'+x.name.split('_')[2]+']'); return x.value.trim() && (!k || k.value!=='controller');}).length; }
 function fillSelect(id){
   const s = document.getElementById(id), cur = s.dataset.v || s.value || '';
   const names = memberNames(); if(cur && !names.includes(cur)) names.unshift(cur);
@@ -1733,7 +1866,13 @@ function sigPrev(){
   document.getElementById('sigbox').classList.toggle('hide', !typed);
   document.getElementById('sigprev').textContent = document.getElementById('signer').value || '';
 }
-function addr(a, c, county){ setv('mail_addr', a); setv('mail_city', c); setv('county_state', county); }
+function addr(a, c, county){ setv('mail_addr', a); setv('mail_city', c); setv('county_state', county); faxForLine6(); }
+const US_ST = /\b(AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b/, US_C = /united states|\busa\b/i;
+function faxForLine6(){
+  const v = (F.querySelector('[name=county_state]')||{}).value || ''; if(!v) return;
+  const sel = F.querySelector('[name=fax_to]'); if(!sel) return;
+  sel.value = (US_ST.test(v) || US_C.test(v)) ? '{{IRS_FAX.us[0]}}' : '{{IRS_FAX.intl[0]}}';
+}
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 let LAST = null, SKIP = [];
 function useOne(i, b){ const [k,c,v] = SKIP[i]; setv(k, v, true); syncMembers(); showX(); b.disabled = true; }
@@ -1755,16 +1894,17 @@ function useAll(onlyEmpty){
   if(!onlyEmpty || !memberNames().length){
     (j.members||[]).slice(0,8).forEach((mm,i)=>{ rows[i].classList.remove('hide');
       rows[i].querySelector('[name=m_name_'+i+']').value = mm.name||''; rows[i].querySelector('[name=m_role_'+i+']').value = mm.role||'';
+      rows[i].querySelector('[name=m_kind_'+i+']').value = mm.kind||'person';
       rows[i].querySelector('[name=m_country_'+i+']').value = mm.country||''; rows[i].querySelector('[name=m_pct_'+i+']').value = mm.pct||''; });
   }
   if(!onlyEmpty || F.preset.value==='foreign_smllc') { F.preset.value = j.preset; }
   const skipped = [];
   Object.entries(j.values||{}).forEach(([k,v])=>{
     const cur = getv(k);
-    if(onlyEmpty && cur && cur!==v && !['is_llc','llc_members','llc_us','entity','entity_other','reason','reason_other','signer_title','preset','emp_ag','emp_house','emp_other','first_wages','prior_ein','fy_close'].includes(k)){ skipped.push([k,cur,v]); return; }
+    if(onlyEmpty && cur && cur!==v && !['is_llc','llc_members','llc_us','entity','entity_other','reason','reason_other','signer_title','preset','emp_ag','emp_house','emp_other','first_wages','prior_ein','fy_close','fax_to'].includes(k)){ skipped.push([k,cur,v]); return; }
     setv(k, v, true);
   });
-  syncMembers(); showX();
+  syncMembers(); showX(); faxForLine6();
   const box = document.getElementById('sugbox');
   let h = '';
   if(j.notes) h += '<div class="box"><b>AI notes:</b> '+esc(j.notes)+'</div>';
