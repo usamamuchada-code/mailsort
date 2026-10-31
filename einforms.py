@@ -1,5 +1,5 @@
 """
-EIN Filing tab (v40g – Articles only, Telnyx fax) – IRS Form SS-4 (Rev. 12-2025), prepared by Startitup Global Inc and faxed to the IRS.
+EIN Filing tab (v40i – Articles only, Telnyx fax) – IRS Form SS-4 (Rev. 12-2025), prepared by Startitup Global Inc and faxed to the IRS.
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config, send_email).
 Nothing in the mail-sorting, Company forms, ITIN or Formations tabs is touched.
@@ -52,6 +52,7 @@ SETTINGS_DEFAULT = {
     "fax_from": "",                             # our Telnyx fax number the faxes are sent from (E.164)
     "followup_days": "7",                       # re-fax the IRS every N days until the EIN arrives
     "followup_max": "8",                        # stop after this many follow-ups
+    "line6_auto": "1",                          # fill line 6 from the address on the Articles (incl. registered agent)
     "read_inbox": "1",                          # read incoming faxes for the EIN (AI) and close the application
 }
 
@@ -114,7 +115,8 @@ FIELDS = ["legal_name", "trade_name", "care_of", "mail_addr", "mail_city", "stre
           "start_date", "fy_close", "emp_ag", "emp_house", "emp_other", "form944", "first_wages", "activity",
           "activity_other", "products", "prior_ein", "prior_ein_no", "use_designee", "designee_name",
           "designee_phone", "designee_fax", "designee_address", "signer", "signer_title", "sign_date",
-          "applicant_phone", "applicant_fax", "sig_mode", "sig_ok", "fax_to", "client_email", "preset", "notes"]
+          "applicant_phone", "applicant_fax", "sig_mode", "sig_ok", "fax_to", "client_email", "preset", "notes",
+          "line6_src", "reg_line6"]
 CHECKS = {"form944", "use_designee", "sig_ok"}
 
 
@@ -166,7 +168,8 @@ def blank_app(s: dict) -> dict:
     a.update({"preset": "foreign_smllc", "fy_close": "December", "emp_ag": "-0-", "emp_house": "-0-", "emp_other": "-0-",
               "first_wages": "N/A", "prior_ein": "no", "use_designee": "", "sig_mode": "typed",
               "fax_to": IRS_FAX["intl"][0], "applicant_phone": s["applicant_phone"], "applicant_fax": s["applicant_fax"],
-              "sign_date": dt.date.today().isoformat()})
+              "sign_date": dt.date.today().isoformat(),
+              "line6_src": "registered" if s.get("line6_auto") else "manual"})
     apply_preset(a, "foreign_smllc")
     return a
 
@@ -329,7 +332,8 @@ Read ONLY what is printed. Never invent. Unknown values are "". Dates as YYYY-MM
  "business_purpose": "",           // business activity / purpose clause, short
  "products_services": "",          // principal products or services if stated
  "fiscal_year_end_month": "",      // e.g. "December" if stated
- "county": "",                     // county of the principal US address – you MAY work this out from a US city/ZIP
+ "county": "",                     // county of the principal office address, or if none of the registered agent address –
+                                   // you MAY work this out from the US city/ZIP (e.g. Jackson WY 83001 -> "Teton")
  "operated_from_country": "",      // city and country where the business is actually run/managed, ONLY if a document
                                    // (e.g. the order form / questionnaire or operating agreement) says so
  "notes": ""}                      // anything the preparer should check (conflicts between documents, unreadable parts)
@@ -440,6 +444,31 @@ def hand_todo(a: dict, members: list[dict]) -> list[str]:
     return t
 
 
+RA_ZIP_COUNTY = {"19901": "Kent", "19904": "Kent", "19801": "New Castle", "19808": "New Castle", "19958": "Sussex",
+                 "82801": "Sheridan", "82001": "Laramie", "83001": "Teton", "82601": "Natrona", "77081": "Harris",
+                 "89501": "Washoe", "89701": "Carson City", "87501": "Santa Fe", "32301": "Leon",
+                 "33602": "Hillsborough"}
+
+
+def line6_from(city_line: str, county: str = "", state: str = "") -> str:
+    """'Jackson, WY 83001' (+ AI county hint) -> 'Teton County, WY'. '' if nothing usable."""
+    m_st = re.search(r"\b([A-Z]{2})\s+\d{5}", city_line or "")
+    st = (m_st.group(1) if m_st else "") or _state_abbr(state)
+    county = (county or "").strip()
+    if not county:
+        zm = re.search(r"\b(\d{5})\b", city_line or "")
+        county = RA_ZIP_COUNTY.get(zm.group(1) if zm else "", "")
+    if county and "county" not in county.lower() and "parish" not in county.lower():
+        county += " County"
+    if county and st:
+        return f"{county}, {st}"
+    return county or US_STATES.get(st, "")
+
+
+def fax_for_line6(line6: str) -> str:
+    return IRS_FAX["us"][0] if is_us_location(line6) else IRS_FAX["intl"][0]
+
+
 def suggestions_from_ai(ai: dict, a: dict) -> tuple[dict, list[dict], str]:
     """Turns the AI reading into SS-4 values. Returns (values, members, preset)."""
     members = []
@@ -470,20 +499,16 @@ def suggestions_from_ai(ai: dict, a: dict) -> tuple[dict, list[dict], str]:
     if addr:
         v["mail_addr"], v["mail_city"] = _addr_split(addr)
     st = str(ai.get("state_of_formation") or "").strip()
-    county = str(ai.get("county") or "").strip()
     ab = _state_abbr(st)
-    m_st = re.search(r"\b([A-Z]{2})\s+\d{5}", v.get("mail_city", ""))
-    st_for_county = (m_st.group(1) if m_st else "") or ab
+    # line 6 option A: county & state of the address on the Articles (principal office, else registered agent)
+    v["reg_line6"] = line6_from(v.get("mail_city", ""), str(ai.get("county") or ""), st)
     run_from = str(ai.get("operated_from_country") or "").strip()
-    v["county_state"] = ""
     if run_from and not is_us_location(run_from) and run_from.lower() not in ("us", "u.s."):
-        v["county_state"] = run_from                 # business run from abroad -> city/country (staff add the city)
-    elif county and principal:                       # only from a real principal office, never the registered agent
-        if "county" not in county.lower() and "parish" not in county.lower():
-            county += " County"
-        v["county_state"] = f"{county}, {st_for_county}" if st_for_county else county
-    if v["county_state"]:
-        v["fax_to"] = IRS_FAX["us"][0] if is_us_location(v["county_state"]) else IRS_FAX["intl"][0]
+        v["county_state"], v["line6_src"] = run_from, "manual"   # a document says the business is run from abroad
+    elif v.get("line6_src", "registered") == "registered":
+        v["county_state"] = v["reg_line6"]
+    if v.get("county_state"):
+        v["fax_to"] = fax_for_line6(v["county_state"])
     if people:
         # responsible party must be an individual: managing member > any person member > controller of a company member
         lead = next((m for m in people if m["kind"] == "person" and "manag" in m["role"].lower()), None) or \
@@ -779,7 +804,7 @@ def ein_settings():
     for k in SETTINGS_DEFAULT:
         if k == "telnyx_api_key" and not request.form.get(k, "").strip():
             continue                                  # blank password box = keep the saved token
-        if k == "read_inbox" and "fax_form" in request.form:
+        if k in ("read_inbox", "line6_auto") and "fax_form" in request.form:
             s[k] = "1" if request.form.get(k) else ""
         elif k in request.form:
             s[k] = request.form[k].strip()
@@ -879,6 +904,16 @@ def ein_save(job):
     d = _job_dir(job)
     m = load_meta(d)
     a, members = form_to_app(request.form, m["a"])
+    if a.get("line6_src") == "registered":
+        computed = line6_from(a.get("mail_city", ""))          # from lines 4a-4b as they are now
+        stored = a.get("reg_line6", "")                         # what Read with AI / quick-fill worked out
+        same_state = stored and computed and stored.split(", ")[-1] in (computed.split(", ")[-1],
+                                                                       _state_abbr(computed))
+        reg = stored if (stored and (not computed or ("County" not in computed and same_state))) else computed
+        a["reg_line6"] = reg
+        if reg:
+            a["county_state"] = reg
+            a["fax_to"] = fax_for_line6(reg)
     old = m["a"]
     m["a"], m["members"] = a, members
     if request.form.get("action") == "generate":
@@ -1613,6 +1648,7 @@ the Fax Application ID and your Telnyx fax number – see the setup steps you we
 <div><label>Maximum follow-ups</label><input type="number" name="followup_max" value="{{s.followup_max}}" min="0" max="52"></div>
 <div><label>Email when an EIN fax arrives</label><input type="text" name="notify_email" value="{{s.notify_email}}"></div>
 </div><input type="hidden" name="fax_form" value="1">
+<label style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><input type="checkbox" name="line6_auto" {% if s.line6_auto %}checked{% endif %} style="width:16px;height:16px"> New applications start with line 6 = “Use the registered address” (untick to start with “Type it manually”)</label>
 <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="read_inbox" {% if s.read_inbox %}checked{% endif %} style="width:16px;height:16px"> Read incoming faxes with AI and close the application when the EIN arrives</label><p><button class="btn">Save settings</button></p></form></details></div>
 {% endblock %}"""
 
@@ -1698,7 +1734,13 @@ If a member is a company, also add the person who controls it. Add or correct na
 <button type="button" class="btn small secondary" onclick="addr('5904 Jessamine St, Ste A15','Houston, TX 77081','Harris County, TX')">Houston office</button>
 <button type="button" class="btn small secondary" onclick="addr('140 E Broadway Ave, Suite 25, #804','Jackson, WY 83001','Teton County, WY')">Wyoming – Jackson office</button></div>
 <div class="g2">
-<div><label><span class="ln">6</span>County and state where principal business is located</label><input type="text" name="county_state" value="{{a.county_state}}" onchange="faxForLine6()">
+<div><label><span class="ln">6</span>County and state where principal business is located</label>
+<div class="radios" style="margin:2px 0 6px">
+<label><input type="radio" name="line6_src" value="registered" {% if a.line6_src!='manual' %}checked{% endif %} onchange="line6Mode()">Use the registered address</label>
+<label><input type="radio" name="line6_src" value="manual" {% if a.line6_src=='manual' %}checked{% endif %} onchange="line6Mode()">Type it manually</label></div>
+<input type="hidden" name="reg_line6" value="{{a.reg_line6}}">
+<input type="text" name="county_state" value="{{a.county_state}}" onchange="faxForLine6()" oninput="faxForLine6()">
+<div class="hint" id="reg6hint"></div>
 <div class="hint">The company's real physical location. US (e.g. "Teton County, WY") → IRS fax 855-641-6935. Run from abroad → city and country (e.g. "Dubai, United Arab Emirates") → fax 304-707-9471. The fax number in section 6 follows this automatically.</div></div>
 <div><label><span class="ln">7a</span>Name of responsible party</label><select name="rp_name" id="rp_name" data-v="{{a.rp_name}}" onchange="this.dataset.v=this.value"></select>
 <div class="hint">Must be an individual – usually the (managing) member.</div></div>
@@ -1894,7 +1936,16 @@ function sigPrev(){
   document.getElementById('sigbox').classList.toggle('hide', !typed);
   document.getElementById('sigprev').textContent = document.getElementById('signer').value || '';
 }
-function addr(a, c, county){ setv('mail_addr', a); setv('mail_city', c); setv('county_state', county); faxForLine6(); }
+function addr(a, c, county){ setv('mail_addr', a); setv('mail_city', c); setv('reg_line6', county);
+  if(getv('line6_src')!=='manual') setv('county_state', county); faxForLine6(); line6Mode(); }
+function line6Mode(){
+  const reg = getv('line6_src') !== 'manual', box = F.querySelector('[name=county_state]'), h = document.getElementById('reg6hint');
+  const rv = F.querySelector('[name=reg_line6]').value;
+  if(reg){ if(rv) box.value = rv; box.readOnly = true; box.style.background = '#f3f4f6';
+    h.textContent = rv ? 'From the address on the Articles (lines 4a–4b).' : 'Filled from the address in lines 4a–4b when you press Save or Read with AI.'; }
+  else { box.readOnly = false; box.style.background = ''; h.textContent = 'US: "County, ST" (e.g. Teton County, WY). Run from abroad: city and country (e.g. Lahore, Pakistan).'; }
+  faxForLine6();
+}
 const US_ST = /\b(AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b/, US_C = /united states|\busa\b/i;
 function faxForLine6(){
   const v = (F.querySelector('[name=county_state]')||{}).value || ''; if(!v) return;
@@ -1930,10 +1981,10 @@ function useAll(onlyEmpty){
   const skipped = [];
   Object.entries(j.values||{}).forEach(([k,v])=>{
     const cur = getv(k);
-    if(onlyEmpty && cur && cur!==v && !['is_llc','llc_members','llc_us','entity','entity_other','reason','reason_other','signer_title','preset','emp_ag','emp_house','emp_other','first_wages','prior_ein','fy_close','fax_to'].includes(k)){ skipped.push([k,cur,v]); return; }
+    if(onlyEmpty && cur && cur!==v && !['is_llc','llc_members','llc_us','entity','entity_other','reason','reason_other','signer_title','preset','emp_ag','emp_house','emp_other','first_wages','prior_ein','fy_close','fax_to','line6_src','reg_line6'].includes(k)){ skipped.push([k,cur,v]); return; }
     setv(k, v, true);
   });
-  syncMembers(); showX(); faxForLine6();
+  syncMembers(); showX(); line6Mode();
   const box = document.getElementById('sugbox');
   let h = '';
   if(j.notes) h += '<div class="box"><b>AI notes:</b> '+esc(j.notes)+'</div>';
@@ -1945,6 +1996,6 @@ function useAll(onlyEmpty){
   }
   box.innerHTML = h; box.classList.toggle('hide', !h);
 }
-syncMembers(); showX(); sigPrev();
+syncMembers(); showX(); sigPrev(); line6Mode();
 </script>
 {% endblock %}"""
