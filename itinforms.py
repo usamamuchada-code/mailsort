@@ -1419,6 +1419,14 @@ def itin_generate():
     return redirect(f"/itin/job/{job}")
 
 
+def _track_url(carrier, number):
+    try:
+        import tracking
+        return tracking.tracking_url(carrier, number)
+    except Exception:
+        return ""
+
+
 @bp.get("/itin/job/<job>")
 def itin_job(job):
     d = _job_dir(job)
@@ -1429,7 +1437,7 @@ def itin_job(job):
                                   base_url=(request.headers.get("X-Forwarded-Proto") or request.scheme).split(",")[0] + "://" + request.host,
                                   addr=IRS_ADDR, outcomes=OUTCOMES, support=support_doc(m["a"]), phone=IRS_STATUS_PHONE,
                                   today=dt.date.today().isoformat(), ptin_msg=ptin_alert(load_caa()), stages=STAGES,
-                                  delete_block=can_delete(m))
+                                  delete_block=can_delete(m), track_url=_track_url)
 
 
 @bp.post("/itin/job/<job>/upload")
@@ -1533,6 +1541,40 @@ def itin_track(job):
     if not errs:
         flash("Progress saved – " + STAGES[after] + ".")
     return redirect(f"/itin/job/{job}#track")
+
+
+@bp.post("/itin/job/<job>/slip")
+def itin_slip(job):
+    """v41a – tracking slip upload: stored with the application, read by AI/OCR -> JSON for Tracker B."""
+    import tracking
+    d = _job_dir(job)
+    up = request.files.get("file")
+    if not up or not up.filename:
+        return jsonify({"error": "Choose a photo or PDF of the tracking slip."}), 400
+    raw = up.read()
+    try:
+        r = tracking.read_slip(raw, up.filename)
+    except Exception as ex:
+        r = {"carrier": "", "tracking_no": "", "date_posted": "", "note": str(ex), "format_ok": False, "url": ""}
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        name = tracking.save_slip(d, raw, up.filename)
+        m.setdefault("slips", []).append({"file": name, "orig": up.filename, "when": dt.datetime.now().isoformat(timespec="seconds"),
+                                          "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin"),
+                                          **{k: r.get(k, "") for k in ("carrier", "tracking_no", "date_posted", "service", "sent_to", "method")}})
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    r["file"] = name
+    return jsonify(r)
+
+
+@bp.get("/itin/job/<job>/slip/<name>")
+def itin_slip_file(job, name):
+    import tracking
+    d = _job_dir(job)
+    m = json.loads((d / "job.json").read_text())
+    if name not in {x["file"] for x in m.get("slips", [])}:
+        abort(404)
+    return send_file(d / "slips" / name, mimetype=tracking.mimetype(name))
 
 
 @bp.get("/itin/job/<job>/file/<path:fname>")
@@ -1669,6 +1711,9 @@ def itin_zip(job):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for x in meta["files"]:
             z.write(d / x["file"], x["file"])
+        for x in meta.get("slips", []):
+            if (d / "slips" / x["file"]).exists():
+                z.write(d / "slips" / x["file"], "tracking_slips/" + x["file"])
     buf.seek(0)
     return send_file(buf, mimetype="application/zip", as_attachment=True,
                      download_name=f"ITIN_{_safe(meta['applicant'])}.zip")
@@ -2415,8 +2460,15 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 <label class="tick"><input type="checkbox" name="enc_id" value="1" {% if t.enc_id %}checked{% endif %}> Copies of the identity documents we reviewed (passport photo page etc.)</label>
 <label class="tick"><input type="checkbox" name="enc_support" value="1" {% if t.enc_support %}checked{% endif %}> {{support}}</label>
 <label class="tick" style="margin-top:14px"><input type="checkbox" name="label_done" value="1" {% if t.label_done %}checked{% endif %}> Postage label generated and envelope sent</label>
+<div style="margin:6px 0 8px 26px;padding:10px 12px;border:1px dashed #94a3b8;border-radius:8px;background:#f8fafc">
+<label style="margin:0">📷 Tracking slip – upload the receipt / label and the carrier, tracking number and date are filled in for you</label>
+<input type="file" id="slipfile" accept="image/*,application/pdf"> <button type="button" class="btn small" onclick="readSlip()">Read slip</button>
+<span id="slipmsg" class="muted"></span>
+{% if m.slips %}<div style="margin-top:6px;font-size:13px">{% for x in m.slips %}<div>🧾 <a href="/itin/job/{{m.job}}/slip/{{x.file}}" target="_blank">{{x.orig or x.file}}</a>
+<span class="muted">– {{x.carrier}} {{x.tracking_no}}{% if x.date_posted %}, {{x.date_posted|ukdate}}{% endif %} (added {{x.when|ukdate}})</span></div>{% endfor %}</div>{% endif %}
+</div>
 <div class="fgrid" style="margin-left:26px"><div><label>Carrier</label><input type="text" name="carrier" value="{{t.carrier}}" placeholder="e.g. FedEx, UPS, USPS Certified Mail"></div>
-<div><label>Tracking number</label><input type="text" name="tracking_no" value="{{t.tracking_no}}"></div>
+<div><label>Tracking number{% if t.tracking_no %} <a id="tracklink" href="{{ track_url(t.carrier, t.tracking_no) }}" target="_blank" style="font-weight:400;{% if not track_url(t.carrier, t.tracking_no) %}display:none{% endif %}">track ↗</a>{% else %} <a id="tracklink" href="#" target="_blank" style="font-weight:400;display:none">track ↗</a>{% endif %}</label><input type="text" name="tracking_no" value="{{t.tracking_no}}"></div>
 <div><label>Date posted (starts the 2-month reminder)</label><input type="date" name="posted_date" value="{{t.posted_date}}"></div></div>
 
 </div>
@@ -2477,6 +2529,22 @@ function show(el){
   document.getElementById('pv').innerHTML = '<iframe src="'+base+encodeURIComponent(el.getAttribute('data-f'))+'?inline=1"></iframe>';
 }
 var first = document.querySelector('.ditem'); if(first) show(first);
+function readSlip(){
+  var f=document.getElementById('slipfile').files[0], msg=document.getElementById('slipmsg');
+  if(!f){ msg.textContent='Choose the photo or PDF of the slip first.'; return }
+  msg.textContent='⏳ Reading the slip…';
+  var fd=new FormData(); fd.append('file', f);
+  fetch('/itin/job/{{m.job}}/slip', {method:'POST', body:fd}).then(function(r){return r.json()}).then(function(r){
+    if(r.error){ msg.textContent='⚠ '+r.error; return }
+    var q=function(n){return document.querySelector('[name='+n+']')}, got=[];
+    if(r.carrier){ q('carrier').value=r.carrier; got.push(r.carrier) }
+    if(r.tracking_no){ q('tracking_no').value=r.tracking_no; got.push(r.tracking_no) }
+    if(r.date_posted && !q('posted_date').value){ q('posted_date').value=r.date_posted; got.push('posted '+r.date_posted.split('-').reverse().join('/')) }
+    var tl=document.getElementById('tracklink'); if(tl && r.url){ tl.href=r.url; tl.style.display='' }
+    msg.innerHTML = (got.length ? '✔ Filled in: '+got.join(' · ')+'. <b>Check them and press Save progress.</b>' : '')
+      + (r.note ? ' <span style="color:#b45309">⚠ '+r.note+'</span>' : '') + ' <span class="muted">(slip saved with this application)</span>';
+  }).catch(function(e){ msg.textContent='⚠ Upload failed – '+e });
+}
 function showAddr(){ var v=document.getElementById('pm').value; document.querySelectorAll('[id^=addr_]').forEach(function(e){e.style.display = e.id=='addr_'+v ? 'inline-block' : 'none'}) }
 function copyAddr(){ var v=document.getElementById('pm').value, el=document.getElementById('addr_'+v);
   navigator.clipboard.writeText(el.innerText).then(function(){document.getElementById('cpmsg').textContent='Copied'}) }
@@ -2645,7 +2713,7 @@ applicant box. The stored W-7 and COA are not changed.</p>
 <tr><td>{{ addr['courier'][1]|join('<br>')|safe }}</td><td>{{ addr['usps'][1]|join('<br>')|safe }}</td></tr></table>
 <p><b>Envelope, in this order:</b> signed W-7 on top → tax return (or exception documents) → W-7-COA → copies of the documents we verified.</p>
 <p>Generate the label, post it, then in <b>Tracker B</b> tick the checklist and "Postage label generated", and enter carrier, tracking number and date posted.
-The 2-month reminder starts from that date.</p>
+The 2-month reminder starts from that date. Quickest: under <b>Tracking slip</b> upload the photo/PDF of the receipt or label and press <b>Read slip</b> – carrier, tracking number and date are filled in; check them and press Save progress. The slip is kept with the application and goes in the ZIP.</p>
 </div>
 
 <div class="card g" id="after"><h2>9. After posting</h2>

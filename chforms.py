@@ -1,5 +1,5 @@
 """
-Company forms tab (v30b) – Companies House change forms + SIU proof-of-address letters.
+Company forms tab (v30b; v41a postage & tracking slips) – Companies House change forms + SIU proof-of-address letters.
 
 Self-contained add-on: app.py only imports this file and calls register(app).
 Nothing in the mail-sorting system is touched.
@@ -596,7 +596,7 @@ def forms_generate():
 def forms_job(job):
     d = _job_dir(job)
     meta = json.loads((d / "job.json").read_text())
-    return render_template_string(JOB_PAGE, m=meta, docs=DOCS)
+    return render_template_string(JOB_PAGE, m=meta, docs=DOCS, ship_to=SHIP_TO, track_url=_track_url)
 
 
 @bp.get("/forms/job/<job>/file/<path:fname>")
@@ -611,6 +611,106 @@ def forms_file(job, fname):
     return send_file(d / fname, mimetype=mt, as_attachment=not inline, download_name=fname)
 
 
+# ----------------------------------------------------------------------------- postage & tracking (v41a)
+
+SHIP_TO = ["Client", "Companies House", "Director / PSC", "Other"]
+
+
+@bp.post("/forms/job/<job>/slip")
+def forms_slip(job):
+    """Upload a tracking slip (AI/OCR reads carrier, tracking number, date) and/or type the details."""
+    import tracking
+    d = _job_dir(job)
+    f = request.form
+    up = request.files.get("file")
+    typed = {k: (f.get(k) or "").strip() for k in ("carrier", "tracking_no", "date_posted", "sent_to", "notes")}
+    r, raw = {}, None
+    if up and up.filename:
+        raw = up.read()
+        try:
+            r = tracking.read_slip(raw, up.filename)
+        except Exception as ex:
+            r = {"note": str(ex)}
+    elif not typed["tracking_no"]:
+        flash("⚠ Upload the tracking slip, or type the tracking number.")
+        return redirect(f"/forms/job/{job}#post")
+    e = {k: typed[k] or str(r.get(k) or "") for k in ("carrier", "tracking_no", "date_posted")}
+    e["tracking_no"] = tracking.clean_number(e["tracking_no"])
+    if not e["carrier"]:
+        k = tracking.carrier_key("", e["tracking_no"])
+        e["carrier"] = tracking.CARRIERS[k][0] if k else ""
+    e.update({"sent_to": typed["sent_to"] if typed["sent_to"] in SHIP_TO else "Client", "notes": typed["notes"],
+              "service": r.get("service", ""), "addressee": r.get("sent_to", ""), "method": r.get("method", "typed"),
+              "when": dt.datetime.now().isoformat(timespec="seconds"),
+              "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin"), "file": "", "orig": ""})
+    with _LOCK:
+        meta = json.loads((d / "job.json").read_text())
+        if raw is not None:
+            e["file"], e["orig"] = tracking.save_slip(d, raw, up.filename), up.filename
+        meta.setdefault("shipments", []).append(e)
+        (d / "job.json").write_text(json.dumps(meta, indent=1))
+    if e["tracking_no"]:
+        flash(f"✔ Tracking saved – {e['carrier'] or 'carrier ?'} {e['tracking_no']}"
+              + (f", posted {dt.date.fromisoformat(e['date_posted']).strftime('%d/%m/%Y')}" if _iso_ok(e["date_posted"]) else "")
+              + ". Check it below." + (f" ⚠ {r['note']}" if r.get("note") else ""))
+    else:
+        flash("⚠ " + (r.get("note") or "No tracking number found") + " – the slip is saved; type the number below and press Save.")
+    return redirect(f"/forms/job/{job}#post")
+
+
+def _iso_ok(s):
+    try:
+        dt.date.fromisoformat(s or "")
+        return True
+    except ValueError:
+        return False
+
+
+@bp.post("/forms/job/<job>/shipment/<int:i>")
+def forms_shipment(job, i):
+    import tracking
+    d = _job_dir(job)
+    f = request.form
+    with _LOCK:
+        meta = json.loads((d / "job.json").read_text())
+        sh = meta.get("shipments") or []
+        if not 0 <= i < len(sh):
+            abort(404)
+        if f.get("action") == "remove":
+            x = sh.pop(i)
+            if x.get("file"):
+                (d / "slips" / x["file"]).unlink(missing_ok=True)
+            msg = "Tracking entry removed."
+        else:
+            for k in ("carrier", "date_posted", "notes"):
+                sh[i][k] = (f.get(k) or "").strip()
+            sh[i]["tracking_no"] = tracking.clean_number(f.get("tracking_no"))
+            if f.get("sent_to") in SHIP_TO:
+                sh[i]["sent_to"] = f["sent_to"]
+            msg = "✔ Tracking details saved."
+        (d / "job.json").write_text(json.dumps(meta, indent=1))
+    flash(msg)
+    return redirect(f"/forms/job/{job}#post")
+
+
+@bp.get("/forms/job/<job>/slip/<name>")
+def forms_slip_file(job, name):
+    import tracking
+    d = _job_dir(job)
+    meta = json.loads((d / "job.json").read_text())
+    if name not in {x.get("file") for x in meta.get("shipments", [])}:
+        abort(404)
+    return send_file(d / "slips" / name, mimetype=tracking.mimetype(name))
+
+
+def _track_url(carrier, number):
+    try:
+        import tracking
+        return tracking.tracking_url(carrier, number)
+    except Exception:
+        return ""
+
+
 @bp.get("/forms/job/<job>/zip")
 def forms_zip(job):
     d = _job_dir(job)
@@ -619,6 +719,9 @@ def forms_zip(job):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for x in meta["files"]:
             z.write(d / x["file"], x["file"])
+        for x in meta.get("shipments", []):
+            if x.get("file") and (d / "slips" / x["file"]).exists():
+                z.write(d / "slips" / x["file"], "tracking_slips/" + x["file"])
     buf.seek(0)
     return send_file(buf, mimetype="application/zip", as_attachment=True,
                      download_name=f"{meta['number']}_{_safe(meta['company'])}_forms.zip")
@@ -804,6 +907,27 @@ JOB_PAGE = r"""{% extends "base" %}{% block body %}
 <div class="btnrow" style="margin-top:14px"><a class="btn" href="/forms/job/{{m.job}}/zip">⬇ Download all ({{m.files|length}}) as ZIP</a>
 <a class="btn secondary" href="/forms">New request</a></div>
 <p class="muted">Check every document in the preview before filing with Companies House or sending to the client.</p></div>
+
+<div class="card" id="post"><h2 style="margin-top:0">📦 Postage &amp; tracking</h2>
+<p class="muted" style="margin-top:0">Upload the Post Office receipt / courier label (photo or PDF) – the carrier, tracking number and date posted are read automatically. Check them, correct if needed and press Save.</p>
+{% if m.shipments %}<table style="width:100%;border-collapse:collapse;font-size:14px">
+<tr style="text-align:left"><th>Sent to</th><th>Carrier</th><th>Tracking number</th><th>Date posted</th><th>Slip</th><th></th></tr>
+{% for x in m.shipments %}{% set i = loop.index0 %}<tr style="border-top:1px solid var(--line)">
+<td><form id="sh{{i}}" method="post" action="/forms/job/{{m.job}}/shipment/{{i}}"></form><select form="sh{{i}}" name="sent_to">{% for o in ship_to %}<option {% if x.sent_to == o %}selected{% endif %}>{{o}}</option>{% endfor %}</select></td>
+<td><input form="sh{{i}}" type="text" name="carrier" value="{{x.carrier}}" style="width:120px"></td>
+<td><input form="sh{{i}}" type="text" name="tracking_no" value="{{x.tracking_no}}" style="width:190px;font-family:ui-monospace,Menlo,Consolas,monospace">
+{% set u = track_url(x.carrier, x.tracking_no) %}{% if u %}<a href="{{u}}" target="_blank">track ↗</a>{% endif %}
+{% if x.service or x.addressee %}<div class="muted" style="font-size:12px">{{x.service}}{% if x.service and x.addressee %} – {% endif %}{{x.addressee}}</div>{% endif %}</td>
+<td><input form="sh{{i}}" type="date" name="date_posted" value="{{x.date_posted}}"></td>
+<td>{% if x.file %}<a href="/forms/job/{{m.job}}/slip/{{x.file}}" target="_blank">🧾 view</a>{% else %}<span class="muted">typed</span>{% endif %}</td>
+<td style="white-space:nowrap"><input form="sh{{i}}" type="hidden" name="notes" value="{{x.notes}}"><button form="sh{{i}}" class="btn small" type="submit">Save</button>
+<button form="sh{{i}}" class="btn small secondary" type="submit" name="action" value="remove" onclick="return confirm('Remove this tracking entry?')">Remove</button></td></tr>{% endfor %}</table>{% endif %}
+<form method="post" action="/forms/job/{{m.job}}/slip" enctype="multipart/form-data" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+<div><label>Sent to</label><select name="sent_to">{% for o in ship_to %}<option>{{o}}</option>{% endfor %}</select></div>
+<div style="flex:1 1 240px"><label>Tracking slip (photo or PDF)</label><input type="file" name="file" accept="image/*,application/pdf"></div>
+<div><label>or type the tracking number</label><input type="text" name="tracking_no" placeholder="optional"></div>
+<button class="btn" type="submit">Add tracking</button></form>
+</div>
 
 <div class="doclist">
 <div>{% for x in m.files %}<div class="ditem{% if loop.first %} on{% endif %}" data-f="{{x.file}}" data-k="{{x.kind}}" onclick="show(this)">
