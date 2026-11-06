@@ -722,6 +722,85 @@ def fill_irs(template: Path, values: dict, keep_pages: int | None = None, overla
 AGENT_FIELDS = ("f1_42[0]", "f1_43[0]", "f1_44[0]", "f1_45[0]", "f1_46[0]", "f1_47[0]", "f1_48[0]")   # W-7 Acceptance Agent box
 
 
+W7_SIGN_BOX = (113.0, 653.0, 321.0, 672.5)     # "Signature of applicant" writing area on W-7 page 1 (v38l)
+SIG_FILE = "client_signature.png"
+
+
+def make_signature_png(data: bytes) -> bytes:
+    """v38l – a photo/scan of the client's signature on plain paper (any photo format or a PDF) ->
+    transparent PNG of just the ink, cropped tight, in dark blue. Shadows / paper colour are dropped."""
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter
+    if data[:4] == b"%PDF":
+        import pymupdf
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        data = doc[0].get_pixmap(dpi=200).tobytes("png")
+    im = Image.open(io.BytesIO(_norm_image(data))).convert("L")
+    if max(im.size) > 1600:
+        im.thumbnail((1600, 1600))
+    # flatten uneven lighting (phone photos): ink darkness = blurred "paper" minus the pixel
+    bg = im.filter(ImageFilter.GaussianBlur(max(8, max(im.size) // 40)))
+    dark = ImageChops.subtract(bg, im)
+    ink = dark.point(lambda v: 0 if v < 25 else 255 if v > 70 else int((v - 25) * 255 / 45))
+    ink = ink.filter(ImageFilter.MedianFilter(3))
+    w, h = ink.size
+    # drop dark areas touching the photo edge (shadows, table, fingers) – done on a small copy for speed
+    sc = min(1.0, 400 / max(w, h))
+    sm = ink.point(lambda v: 255 if v > 60 else 0).resize((max(1, int(w * sc)), max(1, int(h * sc))))
+    sm = sm.filter(ImageFilter.MaxFilter(3)).point(lambda v: 255 if v > 0 else 0)
+    sw, sh = sm.size
+    spx = sm.load()
+    for x, y in [(x, 0) for x in range(sw)] + [(x, sh - 1) for x in range(sw)] + \
+                [(0, y) for y in range(sh)] + [(sw - 1, y) for y in range(sh)]:
+        if spx[x, y] == 255:
+            ImageDraw.floodfill(sm, (x, y), 128)
+    keep = sm.point(lambda v: 0 if v == 128 else 255).resize((w, h)).point(lambda v: 255 if v > 127 else 0)
+    ink = ImageChops.multiply(ink, keep)
+    mask = ink.point(lambda v: 255 if v > 128 else 0)
+    hist = [round(v * h / 255) for v in mask.resize((w, 1), Image.BOX).getdata()]    # ink per column
+    rows = [round(v * w / 255) for v in mask.resize((1, h), Image.BOX).getdata()]    # ink per row
+    total = sum(hist)
+    if total < 30:
+        raise ValueError("No signature found in that image – take a clearer photo of the signature on plain white paper.")
+
+    def span(cnt):                                     # ignore the outer 1% of ink (specks, shadows at the edges)
+        tot, acc, lo = sum(cnt) or 1, 0, 0
+        for i, c in enumerate(cnt):
+            acc += c
+            if acc >= tot * 0.01:
+                lo = i
+                break
+        acc, hi = 0, len(cnt) - 1
+        for i in range(len(cnt) - 1, -1, -1):
+            acc += cnt[i]
+            if acc >= tot * 0.01:
+                hi = i
+                break
+        return lo, hi
+    x0, x1 = span(hist)
+    y0, y1 = span(rows)
+    pad = max(4, (x1 - x0) // 30)
+    box = (max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad))
+    alpha = ink.crop(box)
+    out = Image.new("RGBA", alpha.size, (12, 30, 110, 0))
+    out.putalpha(alpha)
+    buf = io.BytesIO()
+    out.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def signed_w7_pdf(w7: bytes, sig: bytes) -> bytes:
+    """v38m – the filled W-7 exactly as normal, with the client's signature placed in the applicant
+    signature box. No watermark or markings. Separate download – the stored W-7 file is not changed."""
+    import pymupdf
+    doc = pymupdf.open(stream=w7, filetype="pdf")
+    box = W7_SIGN_BOX
+    doc[0].insert_image(pymupdf.Rect(box[0] + 2, box[1] + 0.5, box[2] - 2, box[3] - 0.5), stream=sig,
+                        keep_proportion=True, overlay=True)
+    buf = io.BytesIO()
+    doc.save(buf, garbage=3, deflate=True)
+    return buf.getvalue()
+
+
 def customer_copy_pdf(a: dict, caa: dict) -> bytes:
     """W-7 for the client's own records: our Acceptance Agent details (phone, fax, name, company, EIN, PTIN,
     office code) blanked and covered, the form flattened so it can't be edited, and a CUSTOMER COPY watermark."""
@@ -1530,6 +1609,58 @@ def itin_customer_copy(job):
                      download_name=f"W-7_customer_copy_{_safe(m['applicant'])}.pdf")
 
 
+@bp.post("/itin/job/<job>/signature")
+def itin_signature(job):
+    """v38l/m – client's signature (photo of it on paper) -> placed in the applicant box of a separate
+    'W-7 with client signature' download. The stored W-7 / COA files are not changed."""
+    d = _job_dir(job)
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        if request.form.get("action") == "remove":
+            (d / SIG_FILE).unlink(missing_ok=True)
+            m.pop("signature", None)
+            msg = "Client signature removed."
+        else:
+            up = request.files.get("file")
+            if not up or not up.filename:
+                flash("⚠ Choose a photo or scan of the client's signature.")
+                return redirect(f"/itin/job/{job}#signature")
+            raw = up.read()
+            try:
+                png = make_signature_png(raw)
+            except Exception as ex:
+                flash(f"⚠ {ex}" if isinstance(ex, ValueError) else "⚠ Could not read that image – try a JPG/PNG photo.")
+                return redirect(f"/itin/job/{job}#signature")
+            (d / SIG_FILE).write_bytes(png)
+            (d / ("client_signature_original" + (Path(up.filename).suffix.lower()[:6] or ".jpg"))).write_bytes(raw)
+            m["signature"] = {"when": dt.datetime.now().isoformat(timespec="seconds"), "orig": up.filename,
+                              "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin")}
+            msg = "✔ Signature added – download \"W-7 with client signature\" to get the filled W-7 with it in the applicant box."
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    flash(msg)
+    return redirect(f"/itin/job/{job}#signature")
+
+
+@bp.get("/itin/job/<job>/w7-signed.pdf")
+def itin_w7_signed(job):
+    d = _job_dir(job)
+    m = json.loads((d / "job.json").read_text())
+    w7 = next((x["file"] for x in m.get("files", []) if x["file"].startswith("W-7_") and not x.get("kind")), None)
+    if not w7 or not (d / SIG_FILE).exists():
+        abort(404)
+    pdf = signed_w7_pdf((d / w7).read_bytes(), (d / SIG_FILE).read_bytes())
+    return send_file(io.BytesIO(pdf), mimetype="application/pdf", as_attachment=request.args.get("inline") != "1",
+                     download_name=f"W-7_signed_{_safe(m['applicant'])}.pdf")
+
+
+@bp.get("/itin/job/<job>/signature.png")
+def itin_signature_png(job):
+    d = _job_dir(job)
+    if not (d / SIG_FILE).exists():
+        abort(404)
+    return send_file(d / SIG_FILE, mimetype="image/png", max_age=0)
+
+
 @bp.get("/itin/job/<job>/zip")
 def itin_zip(job):
     d = _job_dir(job)
@@ -2187,7 +2318,8 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
 </div>
 <div class="btnrow" style="margin-top:14px"><a class="btn" href="/itin/job/{{m.job}}/zip">⬇ Download all ({{m.files|length}}) as ZIP</a>
 {% set w7f = [] %}{% for x in m.files if x.file.startswith('W-7_') %}{% if w7f.append(x) %}{% endif %}{% endfor %}{% if w7f %}<a class="btn secondary" href="/itin/job/{{m.job}}/file/{{w7f[0].file}}?inline=1" target="_blank">🖨 Print W-7 (for signing / IRS)</a>
-<a class="btn secondary" href="/itin/job/{{m.job}}/customer-copy.pdf?inline=1" target="_blank">🧾 Customer copy (our details masked)</a>{% endif %}
+<a class="btn secondary" href="/itin/job/{{m.job}}/customer-copy.pdf?inline=1" target="_blank">🧾 Customer copy (our details masked)</a>{% if m.signature %}
+<a class="btn secondary" href="/itin/job/{{m.job}}/w7-signed.pdf?inline=1" target="_blank">📄 W-7 with client signature</a>{% endif %}{% endif %}
 <a class="btn secondary" href="/itin">New application</a></div>
 <p class="muted">Before sending to the IRS: check every field against the documents; the applicant signs and dates the W-7;
 our responsible party signs and dates the Acceptance Agent box and the Certificate of Accuracy; attach the copy of the
@@ -2303,6 +2435,19 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 </div>
 
 {% endif %}
+{% if m.status not in ('kyc_sent', 'kyc_received') %}<div class="card" id="signature"><h2 style="margin-top:0">✍ Client signature</h2>
+<p class="muted" style="margin-top:0">Upload the photo or scan of the signature the client sent. It is cleaned up (paper background removed) and placed in the
+applicant signature box of a separate <b>W-7 with client signature</b> download – the filled W-7 exactly as normal. The stored W-7 and COA are not changed.</p>
+{% if m.signature %}<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+<div style="border:1px solid var(--line);border-radius:8px;padding:8px 14px;background:#fff"><img src="/itin/job/{{m.job}}/signature.png?v={{m.signature.when}}" alt="client signature" style="max-height:70px;max-width:320px;display:block"></div>
+<div class="muted" style="font-size:13px">From {{m.signature.orig}}<br>added {{m.signature.when|ukdate}} by {{m.signature.staff}}</div></div>{% endif %}
+<div class="btnrow" style="margin-top:10px">
+<form method="post" action="/itin/job/{{m.job}}/signature" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+<div><label>{{ 'Replace signature' if m.signature else 'Signature photo / scan' }}</label><input type="file" name="file" accept="image/*,application/pdf" required></div>
+<button class="btn" type="submit">Upload signature</button></form>
+{% if m.signature %}<form method="post" action="/itin/job/{{m.job}}/signature" onsubmit="return confirm('Remove the signature from the customer copy?')"><input type="hidden" name="action" value="remove"><button class="btn secondary" type="submit">Remove</button></form>{% endif %}
+{% if m.signature %}<a class="btn secondary" href="/itin/job/{{m.job}}/w7-signed.pdf?inline=1" target="_blank">📄 W-7 with client signature</a>{% endif %}</div>
+</div>{% endif %}
 <div class="card" id="docs"><h2>Documents <a class="btn small secondary" href="/itin/guide#docs" style="float:right">guide</a></h2>
 <table><tr><th>Document</th><th style="width:200px">Needed?</th><th>Uploaded</th></tr>
 {% for k, d in doc_types.items() %}{% set lv = rules[k][0] %}{% if lv != 'na' or up.get(k) %}
@@ -2490,6 +2635,9 @@ DocuSign-type signature will get the application suspended or rejected.</div>
 <p><b>Manual filing</b> (KYC and signatures done offline, no link): on the ITIN page press <b>Start a manual application</b>, fill the W-7 as normal, upload the
 documents (no engagement form needed), and complete step 5 with the KYC and signing dates. Tracker A ticks itself from those dates.
 An existing application (e.g. a KYC link the client never finished) can be switched with <b>Switch to manual filing</b> on its page.</p>
+<p><b>Client signature</b>: on the application page, under <b>Client signature</b>, upload the photo of the signature the client sent (any photo format
+or PDF – the paper background and shadows are removed automatically). Then <b>W-7 with client signature</b> gives the filled W-7 with that signature in the
+applicant box. The stored W-7 and COA are not changed.</p>
 </div>
 
 <div class="card g" id="post"><h2>8. Posting to the IRS</h2>
