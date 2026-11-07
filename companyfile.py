@@ -1,5 +1,7 @@
 """
-MailSort v42a – Company files (one file/folder per company, built from the mail room).
+MailSort v42b – Company files (one file/folder per company, built from the mail room).
+v42b: service details on every file (package, services taken, start date, expiry, days left),
+      reseller view (/companies/reseller?name=…): their clients, key-document ZIP, status-report email.
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_batch, read_clients).
 
@@ -8,6 +10,8 @@ Self-contained add-on: app.py only imports this file and calls register(app, loa
   /company/zip?name=...      -> all VERIFIED letters of that company in one ZIP
   /company/letterkind (POST) -> staff confirm / correct what a letter is
   /company/manual    (POST)  -> staff tick a document received outside the mail room (or undo)
+  /company/services  (POST)  -> edit the "services taken" text for a client (writes clients.csv)
+  /companies/reseller?name=  -> one reseller's clients; /companies/reseller/zip; /companies/reseller/report
 
 The three key documents:
   ch_auth_code     Companies House – Authentication Code
@@ -37,6 +41,11 @@ BATCHES = DATA / "batches"
 OUT = DATA / "companyfile"
 INDEX_FILE = OUT / "index.json"
 OVR_FILE = OUT / "overrides.json"
+CLIENTS_CSV = DATA / "clients.csv"
+SOON_DAYS = 30
+COVERS = {"Basic": "official government post only (HMRC, Companies House, courts …)",
+          "Standard": "official government post only (HMRC, Companies House, courts …)",
+          "Premium": "all post", "": "all post (no package set)"}
 INDEX_VERSION = 1
 
 DOCS = [  # key, label, sender, icon
@@ -82,6 +91,7 @@ def load_overrides() -> dict:
     o = _read_json(OVR_FILE, {})
     o.setdefault("letters", {})   # "bid/lid" -> {kind: <doc key>|"none", by, when}
     o.setdefault("manual", {})    # company key -> {doc key: {date, note, by, when}}
+    o.setdefault("reseller_reports", {})   # reseller key -> [{when, to, by, n}]
     return o
 
 
@@ -254,6 +264,28 @@ def company_status(key: str, letters: list[dict], ovr: dict) -> dict:
     return res
 
 
+def service_info(c: dict) -> dict:
+    """Start / expiry / package / services for one client row (from read_clients – _expiry already set)."""
+    exp = c.get("_expiry") or ""
+    days = None
+    if exp:
+        try:
+            days = (dt.date.fromisoformat(exp[:10]) - dt.date.today()).days
+        except Exception:
+            days = None
+    state = "unknown" if days is None else ("expired" if days < 0 else ("soon" if days <= SOON_DAYS else "ok"))
+    pkg = (c.get("package") or "").strip()
+    svcs = [x.strip() for x in re.split(r"[;|\n]+", c.get("services") or "") if x.strip()]
+    return {"start": c.get("start_date") or "", "expiry": exp, "days": days, "state": state,
+            "package": pkg, "covers": COVERS.get(pkg, ""), "services": svcs,
+            "reseller": (c.get("reseller") or "").strip(), "reseller_email": (c.get("reseller_email") or "").strip(),
+            "auto_overdue": bool(c.get("_auto_overdue"))}
+
+
+def rkey(name: str) -> str:
+    return re.sub(r"\s+", " ", (name or "").strip()).lower()
+
+
 def build_overview():
     idx = get_index()
     ovr = load_overrides()
@@ -281,11 +313,83 @@ def build_overview():
         ver = [e for e in ls if e["state"] == "verified"]
         nposs = sum(1 for d in DOC_KEYS if st[d]["state"] == "possible")
         alerts += 1 if nposs else 0
-        out.append({"c": c, "key": k, "st": st, "n": len(ver), "nwait": len(ls) - len(ver),
+        out.append({"c": c, "key": k, "st": st, "n": len(ver), "nwait": len(ls) - len(ver), "svc": service_info(c),
                     "last": max((e.get("created") or "" for e in ver), default=""),
                     "have": sum(1 for d in DOC_KEYS if st[d]["state"] in ("received", "manual")), "nposs": nposs})
     _cache["alerts"] = alerts
     return out
+
+
+def _best_spelling(names: list[str]) -> str:
+    """The reseller name as most often typed (ties: the one with capitals), e.g. 'FormationsHub Ltd' over 'formationshub ltd'."""
+    from collections import Counter
+    cnt = Counter(n.strip() for n in names if n.strip())
+    return max(cnt, key=lambda n: (cnt[n], n != n.lower())) if cnt else ""
+
+
+def reseller_summary(rows: list[dict]) -> list[dict]:
+    res: dict[str, dict] = {}
+    for r in rows:
+        name = r["svc"]["reseller"]
+        if not name:
+            continue
+        x = res.setdefault(rkey(name), {"name": name, "email": "", "n": 0, "missing": 0, "check": 0, "soon": 0, "expired": 0})
+        x["n"] += 1
+        x.setdefault("_names", []).append(name)
+        x["name"] = _best_spelling(x["_names"])
+        x["email"] = x["email"] or r["svc"]["reseller_email"]
+        x["missing"] += 1 if r["have"] < 3 else 0
+        x["check"] += 1 if r["nposs"] else 0
+        x["soon"] += 1 if r["svc"]["state"] == "soon" else 0
+        x["expired"] += 1 if r["svc"]["state"] == "expired" else 0
+    return sorted(res.values(), key=lambda x: x["name"].lower())
+
+
+def reseller_rows(name: str) -> list[dict]:
+    k = rkey(name)
+    rows = [r for r in build_overview() if rkey(r["svc"]["reseller"]) == k]
+    rows.sort(key=lambda r: r["c"]["company_name"].lower())
+    return rows
+
+
+def report_text(name: str, rows: list[dict], sender_name: str) -> tuple[str, str]:
+    today = dt.date.today().strftime("%d/%m/%Y")
+    def d(v):
+        try:
+            return dt.date.fromisoformat((v or "")[:10]).strftime("%d/%m/%Y")
+        except Exception:
+            return v or ""
+    lines = []
+    for i, r in enumerate(rows, 1):
+        c, sv = r["c"], r["svc"]
+        head = f"{i}. {c['company_name']}" + (f" (Unit {c['siu']})" if c.get("siu") else "")
+        svc = " – ".join(x for x in [sv["package"] and f"{sv['package']} package", "; ".join(sv["services"])] if x)
+        period = ""
+        if sv["start"]:
+            period = f"service from {d(sv['start'])}"
+            if sv["expiry"]:
+                period += f" to {d(sv['expiry'])}"
+                period += (f" – EXPIRED {-sv['days']} day(s) ago, renewal needed" if sv["state"] == "expired"
+                           else f" ({sv['days']} day(s) left)")
+        lines.append(head)
+        if svc or period:
+            lines.append("   " + " · ".join(x for x in [svc, period] if x))
+        for k, label, _s, _i in DOCS:
+            st = r["st"][k]
+            if st["state"] == "received":
+                sent = f", sent to the client {d(st['sent'][0])}" if st.get("sent") else ", not yet sent to the client"
+                lines.append(f"   {label}: received {d(st['received'])}{sent}")
+            elif st["state"] == "manual":
+                lines.append(f"   {label}: received {d(st['received'])}")
+            else:
+                lines.append(f"   {label}: not received yet")
+        lines.append("")
+    subject = f"Client status update – {len(rows)} client(s) – {today}"
+    body = (f"Dear {name},\n\nHere is the current status of your clients at Startitup Business Address as of {today}:\n\n"
+            + "\n".join(lines) +
+            "\nIf any document shows \"not received yet\" for a company that has been set up for a while, "
+            "please let us know and we can help you request a replacement.\n\nKind regards,\n" + sender_name + "\n")
+    return subject, body
 
 
 def _start_days(c: dict):
@@ -312,7 +416,11 @@ def companies():
     tot = len(rows)
     complete = sum(1 for r in rows if r["have"] == 3)
     poss = sum(1 for r in rows if r["nposs"])
-    return render_template_string(LIST, rows=rows, docs=DOCS, tot=tot, complete=complete, poss=poss)
+    resellers = reseller_summary(rows)
+    soon = sum(1 for r in rows if r["svc"]["state"] == "soon")
+    expired = sum(1 for r in rows if r["svc"]["state"] == "expired")
+    return render_template_string(LIST, rows=rows, docs=DOCS, tot=tot, complete=complete, poss=poss,
+                                  resellers=resellers, soon=soon, expired=expired, soon_days=SOON_DAYS)
 
 
 @bp.get("/company")
@@ -336,7 +444,8 @@ def company():
     ver = [e for e in ls if e["state"] == "verified"]
     wait = [e for e in ls if e["state"] != "verified"]
     return render_template_string(COMPANY, c=c, st=st, docs=DOCS, ver=ver, wait=wait, label=DOC_LABEL,
-                                  today=dt.date.today().isoformat(), days=_start_days(c))
+                                  today=dt.date.today().isoformat(), days=_start_days(c), svc=service_info(c),
+                                  soon_days=SOON_DAYS)
 
 
 @bp.get("/company/zip")
@@ -406,14 +515,119 @@ def manual():
     return redirect(f"/company?name={_q(name)}")
 
 
+@bp.post("/company/services")
+def company_services():
+    """Save the 'services taken' text for one client straight into clients.csv (other columns untouched)."""
+    import csv
+    name = (request.form.get("name") or "").strip()
+    text = re.sub(r"\s+", " ", (request.form.get("services") or "").strip())[:500]
+    if not name or not CLIENTS_CSV.exists():
+        abort(400)
+    with open(CLIENTS_CSV, newline="", encoding="utf-8-sig") as f:
+        rd = csv.DictReader(f)
+        fields = list(rd.fieldnames or [])
+        rows = list(rd)
+    if "services" not in fields:
+        fields.append("services")
+    hit = False
+    for r in rows:
+        if ckey(r.get("company_name", "")) == ckey(name):
+            r["services"] = text
+            hit = True
+    if not hit:
+        flash("This company is not in the client database – add it there first.")
+        return redirect(f"/company?name={_q(name)}")
+    tmp = CLIENTS_CSV.with_suffix(".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader(); w.writerows(rows)
+    tmp.replace(CLIENTS_CSV)
+    flash("Services saved." + (" Tip: add a 'services' column to your portal export so it stays filled after the next CSV upload." if text else ""))
+    return redirect(f"/company?name={_q(name)}")
+
+
+@bp.get("/companies/reseller")
+def reseller():
+    name = (request.args.get("name") or "").strip()
+    rows = reseller_rows(name)
+    if not rows:
+        flash(f"No clients found for reseller '{name}'.")
+        return redirect("/companies")
+    rname = _best_spelling([r["svc"]["reseller"] for r in rows])
+    email = next((r["svc"]["reseller_email"] for r in rows if r["svc"]["reseller_email"]), "")
+    log = load_overrides()["reseller_reports"].get(rkey(name), [])
+    nkey = sum(1 for r in rows for d in DOC_KEYS if r["st"][d]["state"] == "received")
+    return render_template_string(RESELLER, rows=rows, name=rname, email=email, docs=DOCS, log=log[-10:][::-1],
+                                  nkey=nkey, soon_days=SOON_DAYS)
+
+
+@bp.get("/companies/reseller/zip")
+def reseller_zip():
+    """Key documents (verified letters only) of every client of this reseller, one folder per company."""
+    name = (request.args.get("name") or "").strip()
+    rows = reseller_rows(name)
+    buf = io.BytesIO()
+    n = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for r in rows:
+            safe = re.sub(r"[^A-Za-z0-9 _.-]", "", r["c"]["company_name"]).strip() or "company"
+            for d in DOC_KEYS:
+                for e in r["st"][d]["letters"]:
+                    p = (BATCHES / e["bid"] / e["file"]).resolve()
+                    if not str(p).startswith(str(BATCHES.resolve())) or not p.exists():
+                        continue
+                    z.write(p, f"{safe}/{DOC_LABEL[d]} - {(e.get('created') or '')[:10]} {e['lid']}.pdf")
+                    n += 1
+    if not n:
+        flash("None of this reseller's clients has a received key document yet.")
+        return redirect(f"/companies/reseller?name={_q(name)}")
+    buf.seek(0)
+    safe_r = re.sub(r"[^A-Za-z0-9 _.-]", "", _best_spelling([r["svc"]["reseller"] for r in rows])).strip() or "reseller"
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name=f"{safe_r} - key documents {dt.date.today().strftime('%d-%m-%Y')}.zip")
+
+
+@bp.route("/companies/reseller/report", methods=["GET", "POST"])
+def reseller_report():
+    name = (request.values.get("name") or "").strip()
+    rows = reseller_rows(name)
+    if not rows:
+        abort(404)
+    rname = _best_spelling([r["svc"]["reseller"] for r in rows])
+    cfg = _hooks["load_config"]() if _hooks.get("load_config") else {}
+    subject, body = report_text(rname, rows, cfg.get("sender_name") or "The Startitup Team")
+    to = (request.values.get("to") or next((r["svc"]["reseller_email"] for r in rows if r["svc"]["reseller_email"]), "")).strip()
+    if request.method == "POST":
+        if not re.fullmatch(r"[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+", to):
+            flash("Please enter one valid email address for the reseller.")
+            return redirect(f"/companies/reseller/report?name={_q(name)}")
+        if not _hooks.get("send_email"):
+            flash("Email sending is not available.")
+            return redirect(f"/companies/reseller?name={_q(name)}")
+        body = (request.form.get("body") or body).replace("\r\n", "\n")
+        try:
+            _hooks["send_email"](cfg, to, request.form.get("subject") or subject, body, [])
+        except Exception as ex:
+            flash(f"Could not send: {ex}")
+            return redirect(f"/companies/reseller/report?name={_q(name)}")
+        ovr = load_overrides()
+        ovr["reseller_reports"].setdefault(rkey(rname), []).append({"when": _now(), "to": to, "by": _staff(), "n": len(rows)})
+        _write_json(OVR_FILE, ovr)
+        flash(f"Status report for {len(rows)} client(s) sent to {to}.")
+        return redirect(f"/companies/reseller?name={_q(name)}")
+    return render_template_string(REPORT, name=rname, to=to, subject=subject, body=body, n=len(rows))
+
+
 def _q(s: str) -> str:
     from urllib.parse import quote
     return quote(s or "", safe="")
 
 
-def register(app, load_batch=None, read_clients=None):
+def register(app, load_batch=None, read_clients=None, send_email=None, load_config=None):
     OUT.mkdir(parents=True, exist_ok=True)
     _hooks["read_clients"] = read_clients or (lambda: [])
+    _hooks["send_email"] = send_email
+    _hooks["load_config"] = load_config
     app.register_blueprint(bp)
 
     @app.context_processor
@@ -445,27 +659,40 @@ STYLE = """<style>
 .kv{display:grid;grid-template-columns:140px 1fr;gap:4px 12px;font-size:14px}.kv b{color:#555;font-weight:600}
 </style>"""
 
-LIST = """{% extends "base" %}{% block body %}""" + STYLE + """
+EXP = """{% macro exp(sv) %}{% if sv.expiry %}{{sv.expiry|ukdate}}<br>{% if sv.state == 'expired' %}<span class="dk" style="background:#fee2e2;color:#991b1b">expired {{ 0 - sv.days }}d ago</span>{% elif sv.state == 'soon' %}<span class="dk pos">{{sv.days}} days left</span>{% else %}<span class="muted tiny">{{sv.days}} days left</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}{% endmacro %}"""
+
+LIST = """{% extends "base" %}""" + EXP + """{% block body %}""" + STYLE + """
 <div class="card"><h1>Company files</h1>
 <p class="muted">One file per company, built from every sorted letter. The three key documents tick themselves off when
 they arrive. Only letters with a <b>verified</b> client match count. Amber = the letter looks like one of them – open the
 company and press Confirm.</p>
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin:8px 0">
 <span class="pill">{{tot}} companies</span><span class="pill active">{{complete}} have all 3</span>
-{% if poss %}<span class="pill" style="background:#fef3c7;color:#92400e">{{poss}} to check</span>{% endif %}</div>
+{% if poss %}<span class="pill" style="background:#fef3c7;color:#92400e">{{poss}} to check</span>{% endif %}
+{% if soon %}<span class="pill" style="background:#fef3c7;color:#92400e">{{soon}} expiring within {{soon_days}} days</span>{% endif %}
+{% if expired %}<span class="pill high">{{expired}} expired</span>{% endif %}</div>
 <div class="chips" id="chips">
 <button class="chip on" data-f="all">All</button><button class="chip" data-f="missing">Missing any</button>
 <button class="chip" data-f="check">To check</button><button class="chip" data-f="complete">All 3 received</button>
 <button class="chip" data-f="new">Started in last 90 days</button>
+<button class="chip" data-f="soon">Expiring ≤ {{soon_days}} days</button><button class="chip" data-f="expired">Expired</button>
+<button class="chip" data-f="direct">Direct clients</button><button class="chip" data-f="res">Reseller clients</button>
 {% for k,l,s,i in docs %}<button class="chip" data-f="no-{{k}}">No {{l}}</button>{% endfor %}</div>
-<input type="text" id="q" placeholder="Search company name, unit or email…" style="max-width:420px">
+<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+<input type="text" id="q" placeholder="Search company name, unit, email or reseller…" style="max-width:420px">
+<select id="rsel" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px"><option value="">All resellers</option>
+{% for x in resellers %}<option value="{{x.name|lower}}" data-n="{{x.name}}">{{x.name}} ({{x.n}})</option>{% endfor %}</select>
+<a class="btn small secondary" id="ropen" style="display:none" href="#">Open reseller page →</a></div>
 <p class="muted tiny" id="cnt"></p>
-<table id="t"><tr><th>Company</th><th>Unit</th><th>Start</th>{% for k,l,s,i in docs %}<th>{{i}} {{l}}</th>{% endfor %}<th>Letters</th><th>Last letter</th><th></th></tr>
+<table id="t"><tr><th>Company</th><th>Unit</th><th>Service</th><th>Start</th><th>Expires</th>{% for k,l,s,i in docs %}<th>{{i}} {{l}}</th>{% endfor %}<th>Letters</th><th>Last letter</th><th></th></tr>
 {% for r in rows %}{% set c = r.c %}
-<tr data-s="{{(c.company_name ~ ' ' ~ (c.siu or '') ~ ' ' ~ (c.email or ''))|lower}}" data-f="{% if r.have < 3 %}missing {% endif %}{% if r.have == 3 %}complete {% endif %}{% if r.nposs %}check {% endif %}{% if r.days is not none and r.days <= 90 %}new {% endif %}{% for k,l,s,i in docs %}{% if r.st[k].state not in ('received','manual') %}no-{{k}} {% endif %}{% endfor %}">
+<tr data-r="{{r.svc.reseller|lower}}" data-s="{{(c.company_name ~ ' ' ~ (c.siu or '') ~ ' ' ~ (c.email or '') ~ ' ' ~ r.svc.reseller)|lower}}" data-f="{% if r.svc.state in ('soon','expired') %}{{r.svc.state}} {% endif %}{% if r.svc.reseller %}res {% else %}direct {% endif %}{% if r.have < 3 %}missing {% endif %}{% if r.have == 3 %}complete {% endif %}{% if r.nposs %}check {% endif %}{% if r.days is not none and r.days <= 90 %}new {% endif %}{% for k,l,s,i in docs %}{% if r.st[k].state not in ('received','manual') %}no-{{k}} {% endif %}{% endfor %}">
 <td><a href="/company?name={{c.company_name|urlencode}}" style="color:#111;font-weight:600">{{c.company_name}}</a>
-{% if c._gone %}<br><span class="pill high tiny">not in client database</span>{% elif c.status and c.status != 'active' %}<br><span class="pill high tiny">{{c.status}}</span>{% endif %}</td>
-<td>{{c.siu or "—"}}</td><td class="tiny">{{c.start_date|ukdate if c.start_date else "—"}}</td>
+{% if c._gone %}<br><span class="pill high tiny">not in client database</span>{% elif c.status and c.status != 'active' %}<br><span class="pill high tiny">{{c.status}}</span>{% endif %}
+{% if r.svc.reseller %}<br><a class="pill tiny" style="background:#e0e7ff;color:#3730a3;text-decoration:none" href="/companies/reseller?name={{r.svc.reseller|urlencode}}">{{r.svc.reseller}}</a>{% endif %}</td>
+<td>{{c.siu or "—"}}</td>
+<td class="tiny">{% if r.svc.package %}<span class="pill">{{r.svc.package}}</span>{% endif %}{% for x in r.svc.services %}<br>{{x}}{% endfor %}{% if not r.svc.package and not r.svc.services %}<span class="muted">—</span>{% endif %}</td>
+<td class="tiny" style="white-space:nowrap">{{c.start_date|ukdate if c.start_date else "—"}}</td><td class="tiny" style="white-space:nowrap">{{ exp(r.svc) }}</td>
 {% for k,l,s,i in docs %}{% set d = r.st[k] %}<td>
 {% if d.state == 'received' %}<span class="dk ok">✓ {{(d.received or "")[:10]|ukdate}}</span>
 {% elif d.state == 'manual' %}<span class="dk man" title="ticked by staff">✓ {{(d.received or "")[:10]|ukdate}}</span>
@@ -474,16 +701,26 @@ company and press Confirm.</p>
 <td>{{r.n}}{% if r.nwait %} <span class="muted tiny">+{{r.nwait}} awaiting check</span>{% endif %}</td>
 <td class="tiny">{{r.last[:10]|ukdate if r.last else "—"}}</td>
 <td><a class="btn small secondary" href="/company?name={{c.company_name|urlencode}}">Open file</a></td></tr>{% endfor %}</table></div>
+{% if resellers %}<div class="card"><h2>Resellers</h2>
+<p class="muted">Each reseller's page lists their clients, lets you download all their key documents in one ZIP and email them a status report.</p>
+<table><tr><th>Reseller</th><th>Email</th><th>Clients</th><th>Missing a key document</th><th>To check</th><th>Expiring ≤ {{soon_days}} days</th><th>Expired</th><th></th></tr>
+{% for x in resellers %}<tr><td><b>{{x.name}}</b></td><td class="tiny">{{x.email or "—"}}</td><td>{{x.n}}</td><td>{{x.missing}}</td>
+<td>{% if x.check %}<span class="dk pos">{{x.check}}</span>{% else %}0{% endif %}</td>
+<td>{% if x.soon %}<span class="dk pos">{{x.soon}}</span>{% else %}0{% endif %}</td>
+<td>{% if x.expired %}<span class="dk" style="background:#fee2e2;color:#991b1b">{{x.expired}}</span>{% else %}0{% endif %}</td>
+<td><a class="btn small secondary" href="/companies/reseller?name={{x.name|urlencode}}">Open</a></td></tr>{% endfor %}</table></div>{% endif %}
 <script>
-const rows=[...document.querySelectorAll('#t tr[data-s]')];let f='all';
-function run(){const q=document.getElementById('q').value.trim().toLowerCase();let n=0;
-rows.forEach(r=>{const ok=(f==='all'||(' '+r.dataset.f).includes(' '+f+' '))&&(!q||r.dataset.s.includes(q));r.style.display=ok?'':'none';if(ok)n++});
-document.getElementById('cnt').textContent=n+' shown';}
+const rows=[...document.querySelectorAll('#t tr[data-s]')];let f='all';const rsel=document.getElementById('rsel'),ro=document.getElementById('ropen');
+function run(){const q=document.getElementById('q').value.trim().toLowerCase();const rv=rsel.value;let n=0;
+rows.forEach(r=>{const ok=(f==='all'||(' '+r.dataset.f).includes(' '+f+' '))&&(!q||r.dataset.s.includes(q))&&(!rv||r.dataset.r===rv);r.style.display=ok?'':'none';if(ok)n++});
+document.getElementById('cnt').textContent=n+' shown';
+if(rv){ro.style.display='';ro.href='/companies/reseller?name='+encodeURIComponent(rsel.options[rsel.selectedIndex].dataset.n);}else{ro.style.display='none';}}
+rsel.onchange=run;
 document.querySelectorAll('#chips .chip').forEach(b=>b.onclick=()=>{document.querySelectorAll('#chips .chip').forEach(x=>x.classList.remove('on'));b.classList.add('on');f=b.dataset.f;run()});
 document.getElementById('q').oninput=run;run();
 </script>{% endblock %}"""
 
-COMPANY = """{% extends "base" %}{% block body %}""" + STYLE + """
+COMPANY = """{% extends "base" %}""" + EXP + """{% block body %}""" + STYLE + """
 <div class="card"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
 <div><h1 style="margin-bottom:6px">{{c.company_name}}</h1>
 {% if c._gone %}<span class="pill high">not in the client database any more</span>{% endif %}</div>
@@ -492,9 +729,29 @@ COMPANY = """{% extends "base" %}{% block body %}""" + STYLE + """
 <div class="kv" style="margin-top:12px">
 <b>Unit (SIU)</b><span>{{c.siu or "—"}}</span><b>Address on file</b><span>{{c.address or "—"}}</span>
 <b>Email</b><span>{{c.email or "—"}}</span><b>Contact</b><span>{{c.contact_name or "—"}}</span>
-<b>Status / package</b><span>{{c.status or "—"}}{% if c.package %} · {{c.package}}{% endif %}</span>
-<b>Start date</b><span>{{c.start_date|ukdate if c.start_date else "—"}}{% if days is not none %} <span class="muted">({{days}} days ago)</span>{% endif %}</span>
-{% if c.reseller %}<b>Reseller</b><span>{{c.reseller}}</span>{% endif %}</div></div>
+<b>Status</b><span>{{c.status or "—"}}{% if svc.auto_overdue %} <span class="muted tiny">(automatic – service year has passed)</span>{% endif %}</span>
+<b>Client</b><span>{% if svc.reseller %}via reseller <a href="/companies/reseller?name={{svc.reseller|urlencode}}"><b>{{svc.reseller}}</b></a>{% if svc.reseller_email %} · {{svc.reseller_email}}{% endif %}{% else %}direct client{% endif %}</span></div></div>
+
+<div class="card"><h2>Service</h2>
+<div class="docs">
+<div class="doc"><div class="muted tiny">Service taken</div>
+<div style="margin-top:4px">{% if svc.package %}<span class="pill" style="font-size:13px">{{svc.package}} package</span>{% else %}<span class="muted">No package set</span>{% endif %}</div>
+<div class="tiny muted" style="margin-top:4px">Post covered: {{svc.covers}}</div>
+{% if svc.services %}<ul style="margin:8px 0 0 18px;padding:0;font-size:14px">{% for x in svc.services %}<li>{{x}}</li>{% endfor %}</ul>{% endif %}
+{% if not c._gone %}<details style="margin-top:8px"><summary class="tiny" style="cursor:pointer">{{'Edit' if svc.services else 'Add'}} services taken</summary>
+<form method="post" action="/company/services" class="mini" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+<input type="hidden" name="name" value="{{c.company_name}}">
+<input type="text" name="services" value="{{svc.services|join('; ')}}" placeholder="e.g. Registered office; Director service address; Mail forwarding" style="width:100%">
+<span class="muted tiny">Separate with ; – saved in the client database.</span><button class="btn small">Save</button></form></details>{% endif %}</div>
+<div class="doc"><div class="muted tiny">Service started</div><div style="font-size:20px;font-weight:700;margin-top:4px">{{svc.start|ukdate if svc.start else "—"}}</div>
+{% if days is not none %}<div class="tiny muted">{{days}} days ago</div>{% endif %}</div>
+<div class="doc {{'possible' if svc.state == 'soon' else ''}}" {% if svc.state == 'expired' %}style="border-color:#fca5a5;background:#fef2f2"{% endif %}>
+<div class="muted tiny">Service expires / renewal due</div><div style="font-size:20px;font-weight:700;margin-top:4px">{{svc.expiry|ukdate if svc.expiry else "—"}}</div>
+{% if svc.state == 'expired' %}<div style="color:#991b1b;font-weight:600;font-size:13px">Expired {{ 0 - svc.days }} days ago – renewal needed</div>
+{% elif svc.state == 'soon' %}<div style="color:#92400e;font-weight:600;font-size:13px">{{svc.days}} days left – renewal due soon</div>
+{% elif svc.state == 'ok' %}<div class="tiny muted">{{svc.days}} days left</div>
+{% else %}<div class="tiny muted">No start date on file – add one in the client database</div>{% endif %}</div>
+</div></div>
 
 <div class="card"><h2>Key documents</h2><div class="docs">
 {% for k,l,s,i in docs %}{% set d = st[k] %}<div class="doc {{d.state}}">
@@ -549,4 +806,39 @@ until a member of staff confirms them in the batch.</p>
 <table><tr><th>Batch date</th><th>Letter</th><th>Printed name / address</th><th>Sender</th><th></th></tr>
 {% for e in wait %}<tr><td class="tiny">{{e.created|ukdate}}</td><td><b>{{e.lid}}</b></td><td class="tiny">{{e.recipient}}<br>{{e.address}}</td>
 <td>{{e.sender}}</td><td><a class="btn small secondary" href="/batch/{{e.bid}}">Check in batch</a></td></tr>{% endfor %}</table></div>{% endif %}
+{% endblock %}"""
+
+
+RESELLER = """{% extends "base" %}""" + EXP + """{% block body %}""" + STYLE + """
+<div class="card"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+<div><h1 style="margin-bottom:4px">Reseller: {{name}}</h1><div class="muted">{{email or "no reseller email on file"}} · {{rows|length}} client(s)</div></div>
+<div class="btnrow"><a class="btn secondary small" href="/companies">← All companies</a>
+{% if nkey %}<a class="btn small secondary" href="/companies/reseller/zip?name={{name|urlencode}}">⬇ Key documents of all clients (ZIP)</a>{% endif %}
+<a class="btn small" href="/companies/reseller/report?name={{name|urlencode}}">✉ Email status report to reseller</a></div></div>
+{% if log %}<p class="muted tiny" style="margin-top:10px">Last reports: {% for x in log %}{{x.when|ukdate}} to {{x.to}} ({{x.n}} clients){{', ' if not loop.last}}{% endfor %}</p>{% endif %}</div>
+<div class="card"><table><tr><th>Company</th><th>Unit</th><th>Service</th><th>Start</th><th>Expires</th>{% for k,l,s,i in docs %}<th>{{i}} {{l}}</th>{% endfor %}<th>Letters</th><th></th></tr>
+{% for r in rows %}{% set c = r.c %}<tr>
+<td><a href="/company?name={{c.company_name|urlencode}}" style="color:#111;font-weight:600">{{c.company_name}}</a>{% if c.status and c.status != 'active' %}<br><span class="pill high tiny">{{c.status}}</span>{% endif %}</td>
+<td>{{c.siu or "—"}}</td>
+<td class="tiny">{% if r.svc.package %}<span class="pill">{{r.svc.package}}</span>{% endif %}{% for x in r.svc.services %}<br>{{x}}{% endfor %}{% if not r.svc.package and not r.svc.services %}<span class="muted">—</span>{% endif %}</td>
+<td class="tiny" style="white-space:nowrap">{{c.start_date|ukdate if c.start_date else "—"}}</td><td class="tiny" style="white-space:nowrap">{{ exp(r.svc) }}</td>
+{% for k,l,s,i in docs %}{% set d = r.st[k] %}<td class="tiny">
+{% if d.state == 'received' %}<span class="dk ok">✓ {{(d.received or "")[:10]|ukdate}}</span><br>{% if d.sent %}<span class="muted">sent {{d.sent[0][:10]|ukdate}}</span>{% else %}<span style="color:#b45309">not sent yet</span>{% endif %}
+{% elif d.state == 'manual' %}<span class="dk man">✓ {{(d.received or "")[:10]|ukdate}}</span>
+{% elif d.state == 'possible' %}<span class="dk pos">? check</span>
+{% else %}<span class="dk no">—</span>{% endif %}</td>{% endfor %}
+<td>{{r.n}}</td><td><a class="btn small secondary" href="/company?name={{c.company_name|urlencode}}">Open file</a></td></tr>{% endfor %}</table></div>
+{% endblock %}"""
+
+REPORT = """{% extends "base" %}{% block body %}""" + STYLE + """
+<div class="card"><h1>Status report – {{name}}</h1>
+<p class="muted">Check the text, edit if needed, then send. It lists {{n}} client(s): service, start/expiry dates and the three key documents.
+No codes or letters are attached.</p>
+<form method="post" action="/companies/reseller/report" onsubmit="return confirm('Send this status report to ' + this.to.value + '?')">
+<input type="hidden" name="name" value="{{name}}">
+<label>To (reseller email)</label><input type="text" name="to" value="{{to}}" required>
+<label>Subject</label><input type="text" name="subject" value="{{subject}}">
+<label>Message</label><textarea name="body" rows="22" style="font-family:ui-monospace,Consolas,monospace;font-size:13px">{{body}}</textarea>
+<label>Your name (for the log)</label><input type="text" name="staff" style="max-width:240px">
+<p><button class="btn">Send report</button> <a class="btn secondary" href="/companies/reseller?name={{name|urlencode}}">Cancel</a></p></form></div>
 {% endblock %}"""
