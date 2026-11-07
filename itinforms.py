@@ -1414,7 +1414,7 @@ def itin_generate():
             "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin"), "files": files,
             "caa": {k: caa.get(k, "") for k in ("company", "responsible_party", "office_code")}}
     if prev_meta:   # keep the KYC, engagement and tracker history of a client-submitted application
-        for k in ("kyc", "engage", "track", "history"):
+        for k in ("kyc", "engage", "track", "history", "tax", "signature", "slips"):   # v42l: keep 1040-NR answers etc.
             if prev_meta.get(k):
                 meta[k] = prev_meta[k]
         meta["when"] = prev_meta.get("when", meta["when"])
@@ -1447,11 +1447,11 @@ def _tax_ctx(m):
         import taxreturn
         ys = taxreturn.years_available()
         forms = {y: [lbl for k, (lbl, _s, _q) in taxreturn.FORMS.items() if taxreturn.template(k, y)] for y in ys}
-        return {"tax_years": ys, "tax_status": taxreturn.STATUS, "tax_expenses": taxreturn.EXPENSES,
+        return {"tax_years": ys, "tax_status": taxreturn.STATUS, "tax_expenses": taxreturn.EXPENSES, "state_fees": taxreturn.STATE_FEES,
                 "tax_def": tax_defaults(m), "tax_view": tax_view(m), "tax_forms": forms}
     except Exception as ex:
         print(f"[itin] 1040-NR section unavailable: {ex}", flush=True)
-        return {"tax_years": [], "tax_status": {}, "tax_expenses": [], "tax_def": {}, "tax_view": {}, "tax_forms": {}}
+        return {"tax_years": [], "tax_status": {}, "tax_expenses": [], "state_fees": {}, "tax_def": {}, "tax_view": {}, "tax_forms": {}}
 
 
 def _track_url(carrier, number):
@@ -2927,8 +2927,10 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>Business code (line B, 6 digits – see Schedule C instructions)</label><input type="text" name="llc_naics" value="{{tx.llc_naics}}" placeholder="e.g. 454110"></div>
  <div><label>LLC street address</label><input type="text" name="llc_street" value="{{tx.llc_street}}"></div>
  <div><label>LLC city, state, ZIP</label><input type="text" name="llc_city_state_zip" value="{{tx.llc_city_state_zip}}"></div>
- <div><label>State formed</label><input type="text" name="llc_state" value="{{tx.llc_state}}" placeholder="e.g. Wyoming"></div>
- <div><label>Date formed</label><input type="date" name="llc_formed" value="{{tx.llc_formed}}"></div>
+ <div><label>State formed</label><select name="llc_state" id="llc_state" onchange="stateFee(true)"><option value="">Choose the state…</option>
+  {% for st, (fee, chk) in state_fees.items() %}<option value="{{st}}" data-fee="{{fee}}" data-chk="{{1 if chk else 0}}" {% if tx.llc_state == st %}selected{% endif %}>{{st}} (${{fee}}{% if chk %} – confirm{% endif %})</option>{% endfor %}</select>
+  <div id="feenote" class="muted" style="font-size:12px"></div></div>
+ <div><label>Date formed</label><input type="date" name="llc_formed" value="{{tx.llc_formed}}" onchange="stateFee(true)"></div>
 </div>
 <p style="margin:12px 0 2px"><b>U.S. <span class="incpart">income and </span>expenses for the year (whole US dollars)</b></p>
 <div class="fgrid">
@@ -2969,6 +2971,19 @@ function findPc(auto){
   return false;
 }
 if(!document.querySelector('#taxret [name=addr_postal]').value.trim()) findPc(true);
+function stateFee(user){
+  var sel=document.getElementById('llc_state'), note=document.getElementById('feenote');
+  var box=document.querySelector('#taxret [name=exp_formation]'), yr=document.querySelector('#taxret [name=year]').value;
+  var fd=document.querySelector('#taxret [name=llc_formed]').value, opt=sel.options[sel.selectedIndex];
+  if(!opt || !opt.value){ note.textContent=''; return }
+  var fee=opt.getAttribute('data-fee'), chk=opt.getAttribute('data-chk')=='1';
+  if(fd && fd.slice(0,4)!=yr){
+    note.innerHTML='Formed in '+fd.slice(0,4)+' – the $'+fee+' formation fee belongs to that year, not '+yr+', so it is not added.';
+    if(user && box.dataset.auto=='1'){ box.value=''; box.dataset.auto='' } return;
+  }
+  if(user && (!box.value.trim() || box.dataset.auto=='1')){ box.value=fee; box.dataset.auto='1'; box.style.background='#fef9c3' }
+  note.innerHTML=opt.value+' LLC filing fee $'+fee+' added as a start-up cost (Schedule C Part V).'+(chk?' <b style="color:#b45309">Sources differ for this state – confirm the fee paid.</b>':'')+' Change it if a different amount was paid.';
+}
 function taxMode(){
   var r=document.querySelector('#taxret [name=mode]:checked'), md=r?r.value:'nil', n=(md=='nil');
   document.getElementById('nilval').value=n?'1':'0';
@@ -2979,7 +2994,7 @@ function taxMode(){
   var f=['Form 1040-NR','Schedule OI'].concat(n?[]:['Schedule 1','Schedule C (the LLC)','Form 8995']).concat(firm?['Form 8948']:[]);
   document.getElementById('formslist').innerHTML='Forms that will be prepared: <b>'+f.join(' · ')+'</b>';
 }
-document.querySelector('#taxret [name=prepared_by]').addEventListener('change',taxMode);taxMode();</script>
+document.querySelector('#taxret [name=prepared_by]').addEventListener('change',taxMode);taxMode();stateFee(false);</script>
 {% endif %}
 {% if m.status not in ('kyc_sent', 'kyc_received') %}<div class="card" id="signature"><h2 style="margin-top:0">✍ Client signature</h2>
 <p class="muted" style="margin-top:0">Upload the photo or scan of the signature the client sent. It is cleaned up (paper background removed) and placed in the
@@ -3621,7 +3636,12 @@ KYC_DOCS = {
 KYC_FIELDS = ("first", "middle", "last", "dob", "sex", "birth_country", "birth_city", "citizenship", "email", "phone",
               "home_1", "home_2", "mail_1", "mail_2", "other_reason", "spouse_name", "spouse_tin", "dep_rel", "dep_name",
               "dep_tin", "school", "school_city", "stay", "had_itin", "old_itin", "been_us", "entry_date", "visa_type",
-              "visa_number", "visa_expiry", "home_tax_id", "us_company", "us_company_state")
+              "visa_number", "visa_expiry", "home_tax_id", "us_company", "us_company_state",
+              # v42l – US company + 1040-NR questions
+              "us_mode", "us_company_ein", "us_company_formed", "us_company_activity", "us_company_addr1", "us_company_addr2",
+              "cost_formation", "cost_agent", "cost_accountant", "cost_other", "cost_other_desc", "us_sales", "us_cogs",
+              "occupation", "days_2023", "days_2024", "days_2025", "us_trips", "filed_us_return", "filed_us_return_text",
+              "no_us_income_ok")
 
 
 def blank_a() -> dict:
@@ -3903,7 +3923,13 @@ def _kyc_render(m, token, err="", saved=False):
     k = m.get("kyc") or {}
     eng = load_engage()
     fee = (m.get("engage") or {}).get("fee", "")
+    try:
+        import taxreturn
+        state_fees, ys = taxreturn.STATE_FEES, taxreturn.years_available()
+    except Exception:
+        state_fees, ys = {}, []
     return render_template_string(KYC_PAGE, m=m, k=k, ans=k.get("answers") or {}, token=token, err=err, saved=saved,
+                                  state_fees=state_fees, tax_year=(ys[-1] if ys else 2025),
                                   reasons=KYC_REASONS, docs=KYC_DOCS, up=uploaded_kinds(m), decl=DECLARATIONS, eng=eng,
                                   fee=fee, terms=eng["terms"].replace("{fee}", fee or "as agreed with us in writing"),
                                   our_mail=", ".join(x for x in (load_caa().get("our_mail_1", "").replace("c/o ", ""), load_caa().get("our_mail_2", "")) if x),
@@ -3915,6 +3941,49 @@ def _kyc_render(m, token, err="", saved=False):
 def kyc_page(token):
     d, m = _kyc_job(token)
     return _kyc_render(m, token, saved=request.args.get("saved") == "1")
+
+
+def kyc_to_tax(ans: dict, m: dict) -> dict | None:
+    """v42l – the client's KYC answers -> the 1040-NR details staff see on the application (they check and prepare)."""
+    g = lambda k: (ans.get(k) or "").strip()
+    if not (ans.get("reason_tax_return") or g("us_mode") in ("expenses", "income")):
+        return None
+    mode = g("us_mode") if g("us_mode") in ("expenses", "income") else "nil"
+    try:
+        import taxreturn
+        years = taxreturn.years_available()
+    except Exception:
+        years = []
+    num = lambda k: re.sub(r"[^\d.]", "", g(k))
+    legal = sum(float(num(k) or 0) for k in ("cost_agent", "cost_accountant"))
+    t = {"year": str(years[-1]) if years else "2025", "mode": mode, "nil": mode == "nil",
+         "confirm_nil": mode == "nil" and bool(ans.get("no_us_income_ok")),
+         "status": "single", "digital": "no", "occupation": g("occupation"), "phone": g("phone"), "email": g("email"),
+         "prepared_by": "client",
+         "llc_name": g("us_company"), "llc_ein": g("us_company_ein"), "llc_state": g("us_company_state"),
+         "llc_formed": g("us_company_formed"), "llc_activity": g("us_company_activity"),
+         "llc_street": g("us_company_addr1"), "llc_city_state_zip": g("us_company_addr2"),
+         "gross": num("us_sales") if mode == "income" else "", "cogs": num("us_cogs") if mode == "income" else "",
+         "exp_formation": num("cost_formation") if mode != "nil" else "",
+         "exp_legal": (f"{legal:g}" if legal else "") if mode != "nil" else "",
+         "exp_other": num("cost_other") if mode != "nil" else "", "exp_other_desc": g("cost_other_desc"),
+         "oi_visa": g("visa_type") or "NOT APPLICABLE",
+         "oi_days_2023": g("days_2023") or "0", "oi_days_2024": g("days_2024") or "0", "oi_days_2025": g("days_2025") or "0",
+         "oi_trips": g("us_trips"), "oi_prior": "yes" if g("filed_us_return") == "yes" else "no",
+         "oi_prior_text": g("filed_us_return_text"), "from_kyc": True}
+    return t
+
+
+@bp.get("/sign/kyc/<token>/postcode")
+def kyc_postcode(token):
+    """v42l – 'find my postcode' on the client's KYC page (token-protected like the page itself)."""
+    _kyc_job(token)
+    import postcode
+    new_line, r = postcode.add_to_line(request.args.get("street", ""), request.args.get("line", ""))
+    r = r or {"postcode": "", "note": "Your address already has a postcode."}
+    note = (f"We found postcode {r['postcode']} – please check it is right." if r.get("postcode")
+            else "We could not find the postcode – please type it in.")
+    return jsonify({"postcode": r.get("postcode", ""), "line": new_line, "note": note})
 
 
 @bp.post("/sign/kyc/<token>")
@@ -3970,6 +4039,22 @@ def kyc_submit(token):
         errs.append("Please upload the letter from the US bank / payer, or the property / mortgage papers.")
     if ans["reason_dependant"] and "residency" not in kinds:
         errs.append("Please upload proof that the dependant lives in the USA.")
+    if ans["reason_tax_return"]:                                   # v42l – US company / tax return questions
+        if ans["us_mode"] not in ("none", "expenses", "income"):
+            errs.append("Please tell us if you have a US company (step 4).")
+        elif ans["us_mode"] in ("expenses", "income"):
+            for fld, lbl in (("us_company", "your US company name"), ("us_company_state", "the state your company is registered in"),
+                             ("us_company_formed", "the date your company was formed"), ("us_company_activity", "what your company does")):
+                if not ans[fld]:
+                    errs.append(f"Please enter {lbl}.")
+            if ans["us_mode"] == "income" and not ans["us_sales"]:
+                errs.append("Please enter your company's US sales / income for the year.")
+        elif ans["us_mode"] == "none" and not ans["no_us_income_ok"]:
+            errs.append("Please confirm you had no US income (step 4), or choose that you have a US company.")
+        for fld in ("days_2023", "days_2024", "days_2025"):
+            if ans[fld] and not re.fullmatch(r"\d{1,3}", ans[fld]):
+                errs.append("Please enter the number of days in the USA as a number (0 if none).")
+                break
     typed, sig = (f.get("typed_name") or "").strip(), f.get("sig") or ""
     if len(typed) < 3:
         errs.append("Please type your full name to sign.")
@@ -3984,6 +4069,9 @@ def kyc_submit(token):
         m = json.loads((d / "job.json").read_text())
         m["a"] = answers_to_a(ans, m["a"], kinds)
         m["applicant"] = " ".join(x for x in (m["a"]["first"], m["a"]["middle"], m["a"]["last"]) if x)
+        kt = kyc_to_tax(ans, m)
+        if kt and not (m.get("tax") or {}).get("generated"):
+            m["tax"] = kt
         signed = {"typed_name": typed, "email": ans["email"], "phone": ans["phone"], "when_utc": now.strftime("%Y-%m-%d %H:%M:%S"),
                   "when_local": now.strftime("%d/%m/%Y"),
                   "ip": (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip(),
@@ -4079,12 +4167,12 @@ canvas{width:100%;height:170px;border:2px dashed #94a3b8;border-radius:10px;back
 
 <div class="card"><h2><span class="step">2</span>Your home address</h2><p class="muted" style="margin:0">Where you normally live – your full street address. The IRS posts your ITIN letter here unless you choose another address below.</p>
 <label class="req">House / flat number and street</label><input type="text" name="home_1" value="{{ans.home_1}}" autocomplete="address-line1">
-<label class="req">Town / city, state or province, postcode and country</label><input type="text" name="home_2" value="{{ans.home_2}}" placeholder="Karachi, Sindh 75600, Pakistan">
+<label class="req">Town / city, state or province, postcode and country <a href="#" onclick="return kpc('home_1','home_2','kpc2')" style="font-weight:400">find my postcode</a></label><input type="text" name="home_2" value="{{ans.home_2}}" placeholder="Karachi, Sindh 75600, Pakistan" onblur="kpc('home_1','home_2','kpc2',1)"><div id="kpc2" class="muted" style="font-size:13px"></div>
 <label class="c"><input type="checkbox" name="mail_ours" value="1" id="mail_ours" {% if ans.mail_ours %}checked{% endif %} onchange="if(this.checked){$('mail_diff').checked=false;$('mail_london').checked=false}"> Send my IRS letters to Startitup Global's US office – we scan and email them to you</label>
 <label class="c"><input type="checkbox" name="mail_london" value="1" id="mail_london" {% if ans.mail_london %}checked{% endif %} onchange="if(this.checked){$('mail_diff').checked=false;$('mail_ours').checked=false}"> Send my IRS letters to Startitup Global's London office – we scan and email them to you</label>
 <label class="c"><input type="checkbox" name="mail_diff" value="1" id="mail_diff" {% if ans.mail_diff %}checked{% endif %} onchange="if(this.checked){$('mail_ours').checked=false;$('mail_london').checked=false}"> Send my IRS letters to a different address of my own</label>
 <div id="x_mail" class="sub hide"><label>Street address</label><input type="text" name="mail_1" value="{{ans.mail_1}}">
-<label>Town / city, state or province, postcode and country</label><input type="text" name="mail_2" value="{{ans.mail_2}}">
+<label>Town / city, state or province, postcode and country <a href="#" onclick="return kpc('mail_1','mail_2','kpcm')" style="font-weight:400">find my postcode</a></label><input type="text" name="mail_2" value="{{ans.mail_2}}" onblur="kpc('mail_1','mail_2','kpcm',1)"><div id="kpcm" class="muted" style="font-size:13px"></div>
 <p class="muted">Use your own address – not a company "care of" address or a private mailbox.</p></div></div>
 
 <div class="card"><h2><span class="step">3</span>Why do you need an ITIN?</h2><p class="muted" style="margin:0">Tick all that apply. Not sure? Tick "Something else" and explain – we'll work it out.</p>
@@ -4108,8 +4196,44 @@ canvas{width:100%;height:170px;border:2px dashed #94a3b8;border-radius:10px;back
 <div class="row2"><div><label>US visa type (e.g. B1/B2)</label><input type="text" name="visa_type" value="{{ans.visa_type}}"></div><div><label>Visa number</label><input type="text" name="visa_number" value="{{ans.visa_number}}"></div></div>
 <label>Visa expiry date</label><input type="date" name="visa_expiry" value="{{ans.visa_expiry}}"></div>
 <label>Your tax number in your own country (if you have one)</label><input type="text" name="home_tax_id" value="{{ans.home_tax_id}}" placeholder="e.g. NTN in Pakistan, UTR in the UK">
-<div class="row2"><div><label>Your US company name (if any)</label><input type="text" name="us_company" value="{{ans.us_company}}"></div>
-<div><label>State it is registered in</label><input type="text" name="us_company_state" value="{{ans.us_company_state}}" placeholder="e.g. Wyoming"></div></div></div>
+
+<div id="x_tax" class="hide" style="margin-top:16px;padding-top:12px;border-top:1px solid #e5e7eb">
+<h3 style="margin:0 0 4px;font-size:17px">Your US company and US tax return</h3>
+<p class="muted" style="margin:0 0 8px">Because you need to file a US tax return, we prepare it for you with your ITIN application. Answer for the tax year {{tax_year}} (1 January – 31 December {{tax_year}}).</p>
+<label class="req">Do you have a US company (LLC)?</label>
+<div class="radio" style="flex-direction:column;align-items:flex-start">
+ <label><input type="radio" name="us_mode" value="none" {% if ans.us_mode=='none' %}checked{% endif %}> No US company, and no US income</label>
+ <label><input type="radio" name="us_mode" value="expenses" {% if ans.us_mode=='expenses' %}checked{% endif %}> Yes – but no sales / income yet, only costs (e.g. formation, registered agent)</label>
+ <label><input type="radio" name="us_mode" value="income" {% if ans.us_mode=='income' %}checked{% endif %}> Yes – and it had sales / income in {{tax_year}}</label></div>
+<div id="x_noinc" class="sub hide"><label class="c"><input type="checkbox" name="no_us_income_ok" value="1" {% if ans.no_us_income_ok %}checked{% endif %}> I confirm I had no US income, wages or US tax deducted in {{tax_year}}</label></div>
+<div id="x_llc" class="sub hide">
+<div class="row2"><div><label class="req">Company name</label><input type="text" name="us_company" value="{{ans.us_company}}" placeholder="e.g. RAZA TRADING LLC"></div>
+<div><label>Company EIN (if you have it)</label><input type="text" name="us_company_ein" value="{{ans.us_company_ein}}" placeholder="12-3456789"></div></div>
+<div class="row2"><div><label class="req">State it is registered in</label><select name="us_company_state" id="us_company_state" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:15px"><option value="">Choose the state…</option>
+{% for st, (fee, chk) in state_fees.items() %}<option value="{{st}}" data-fee="{{fee}}" {% if ans.us_company_state == st %}selected{% endif %}>{{st}}</option>{% endfor %}</select></div>
+<div><label class="req">Date it was formed</label><input type="date" name="us_company_formed" value="{{ans.us_company_formed}}"></div></div>
+<label class="req">What does the company do?</label><input type="text" name="us_company_activity" value="{{ans.us_company_activity}}" placeholder="e.g. online clothing shop, software services">
+<div class="row2"><div><label>Company US address (street)</label><input type="text" name="us_company_addr1" value="{{ans.us_company_addr1}}" placeholder="e.g. registered agent address"></div>
+<div><label>City, state, ZIP</label><input type="text" name="us_company_addr2" value="{{ans.us_company_addr2}}" placeholder="Sheridan, WY 82801"></div></div>
+<p style="margin:12px 0 2px"><b>Costs the company paid in {{tax_year}}</b> <span class="muted">(US dollars – only what was actually paid; keep the receipts)</span></p>
+<div class="row2"><div><label>State formation fee</label><input type="text" name="cost_formation" id="cost_formation" value="{{ans.cost_formation}}"><div id="kfee" class="muted" style="font-size:13px"></div></div>
+<div><label>Registered agent fee</label><input type="text" name="cost_agent" value="{{ans.cost_agent}}"></div></div>
+<div class="row2"><div><label>Accountant / legal fees</label><input type="text" name="cost_accountant" value="{{ans.cost_accountant}}"></div>
+<div><label>Other costs</label><input type="text" name="cost_other" value="{{ans.cost_other}}"></div></div>
+<label>What were the other costs?</label><input type="text" name="cost_other_desc" value="{{ans.cost_other_desc}}" placeholder="e.g. bank charges, software">
+<div id="x_inc" class="hide"><div class="row2"><div><label class="req">Total US sales / income in {{tax_year}}</label><input type="text" name="us_sales" value="{{ans.us_sales}}"></div>
+<div><label>Cost of the goods you sold</label><input type="text" name="us_cogs" value="{{ans.us_cogs}}"></div></div></div>
+</div>
+<div class="row2"><div><label>Your occupation</label><input type="text" name="occupation" value="{{ans.occupation or 'Business owner'}}"></div>
+<div><label>Have you filed a US tax return before?</label><div class="radio">{% for v, l in [('no','No'),('yes','Yes')] %}<label><input type="radio" name="filed_us_return" value="{{v}}" {% if (ans.filed_us_return or 'no')==v %}checked{% endif %}> {{l}}</label>{% endfor %}</div></div></div>
+<div id="x_filed" class="sub hide"><label>Which year and form (e.g. 2024 Form 1040-NR)</label><input type="text" name="filed_us_return_text" value="{{ans.filed_us_return_text}}"></div>
+<p style="margin:12px 0 2px"><b>Days you were in the USA</b> <span class="muted">(0 if you were not there)</span></p>
+<div class="row2"><div class="row2"><div><label>2023</label><input type="text" name="days_2023" value="{{ans.days_2023 or '0'}}" inputmode="numeric"></div><div><label>2024</label><input type="text" name="days_2024" value="{{ans.days_2024 or '0'}}" inputmode="numeric"></div></div>
+<div><label>2025</label><input type="text" name="days_2025" value="{{ans.days_2025 or '0'}}" inputmode="numeric"></div></div>
+<label>Your visits to the USA in {{tax_year}} – one per line: date you arrived – date you left (day/month/year)</label>
+<textarea name="us_trips" rows="2" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px" placeholder="e.g. 14/03/2025 - 20/03/2025">{{ans.us_trips}}</textarea>
+</div>
+</div>
 
 <div class="card"><h2><span class="step">5</span>Upload your documents</h2>
 <p class="muted" style="margin:0">Take clear colour photos with all four corners showing, or upload PDFs. Only the documents for your answers are shown.</p>
@@ -4138,6 +4262,10 @@ function show(){
   $('x_mail').classList.toggle('hide', !on('mail_diff'));
   ['spouse','dependant','student','other'].forEach(function(k){ $('x_'+k).classList.toggle('hide', !on('r_'+k)) });
   $('x_itin').classList.toggle('hide', val('had_itin')!='yes'); $('x_us').classList.toggle('hide', val('been_us')!='yes');
+  var tx=on('r_tax_return'), um=val('us_mode');
+  $('x_tax').classList.toggle('hide', !tx); $('x_llc').classList.toggle('hide', !(um=='expenses'||um=='income'));
+  $('x_inc').classList.toggle('hide', um!='income'); $('x_noinc').classList.toggle('hide', um!='none');
+  $('x_filed').classList.toggle('hide', val('filed_us_return')!='yes');
   var np=on('no_passport'), need={
     passport:[!np, !np], national_id:[np, np], birth_cert:[np, np], address:[true,false],
     visa:[val('been_us')=='yes'||on('r_student')||on('r_visa_family'), on('r_student')||on('r_visa_family')],
@@ -4149,6 +4277,26 @@ function show(){
     d.classList.toggle('hide', !need[k][0] && !has); var t=$('t_'+k); t.className='tag '+(need[k][1]?'r':'o'); t.textContent=need[k][1]?'Needed':'Optional' }
 }
 document.getElementById('kf').addEventListener('change', show); show();
+function kfee(user){
+  var sel=$('us_company_state'), box=$('cost_formation'), note=$('kfee'); if(!sel) return;
+  var o=sel.options[sel.selectedIndex], fd=document.querySelector('[name=us_company_formed]').value;
+  if(!o||!o.value){ note.textContent=''; return }
+  if(fd && fd.slice(0,4)!='{{tax_year}}'){ note.textContent='Formed before {{tax_year}} – leave this empty.'; if(user && box.dataset.auto=='1'){box.value='';box.dataset.auto=''} return }
+  if(user && (!box.value.trim()||box.dataset.auto=='1')){ box.value=o.getAttribute('data-fee'); box.dataset.auto='1' }
+  note.textContent='Usual '+o.value+' fee: $'+o.getAttribute('data-fee')+' – change it if you paid a different amount.';
+}
+if($('us_company_state')){ $('us_company_state').addEventListener('change',function(){kfee(true)});
+  document.querySelector('[name=us_company_formed]').addEventListener('change',function(){kfee(true)}); kfee(false) }
+function kpc(st, ln, noteId, auto){
+  var s=document.querySelector('[name='+st+']'), l=document.querySelector('[name='+ln+']'), note=$(noteId);
+  if(!l || !l.value.trim()) return false;
+  if(/\b\d{4,6}\b|\b[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}\b/i.test(l.value)){ if(!auto) note.textContent='Your address already has a postcode.'; return false }
+  note.textContent='Looking up your postcode…';
+  fetch('/sign/kyc/{{token}}/postcode?street='+encodeURIComponent(s?s.value:'')+'&line='+encodeURIComponent(l.value)).then(function(r){return r.json()}).then(function(r){
+    if(r.postcode && r.line){ l.value=r.line; l.style.background='#fef9c3' } note.textContent=r.note||'';
+  }).catch(function(){ note.textContent='' });
+  return false;
+}
 var c=$('pad'), x=c.getContext('2d'), drawing=false, drawn=0;
 function size(){ var r=c.getBoundingClientRect(), d=window.devicePixelRatio||1; c.width=r.width*d; c.height=r.height*d; x.scale(d,d); x.lineWidth=2.4; x.lineCap='round'; x.lineJoin='round'; x.strokeStyle='#0b1f66' }
 size();

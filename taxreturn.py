@@ -49,8 +49,28 @@ EXPENSES = [   # (key, label, Schedule C 2025 field)
     ("supplies", "Supplies (line 22)", "f1_33[0]"),
     ("taxes", "Taxes and licences, e.g. state annual report fee (line 23)", "f1_34[0]"),
     ("travel", "Travel (line 24a)", "f1_35[0]"),
+    ("formation", "LLC state formation fee (Part V start-up cost) – filled from the state chosen", None),
     ("other", "Other expenses (Part V, line 27b) – describe below", None),
 ]
+
+# State filing fee for an LLC's Articles of Organization / Certificate of Formation (online filing, USD).
+# Checked against 4 published 2026 fee tables (llcuniversity Jun 2026, llc.org Aug 2026, fileforms Jul 2026,
+# howtoincorporateforfree Oct 2026). True = sources disagree -> staff confirm on the state's website.
+STATE_FEES = {
+    "Alabama": (200, False), "Alaska": (250, False), "Arizona": (50, False), "Arkansas": (45, False),
+    "California": (70, False), "Colorado": (50, False), "Connecticut": (120, False), "Delaware": (110, False),
+    "District of Columbia": (99, False), "Florida": (125, False), "Georgia": (110, False), "Hawaii": (50, False),
+    "Idaho": (100, False), "Illinois": (150, False), "Indiana": (95, True), "Iowa": (50, False), "Kansas": (160, True),
+    "Kentucky": (40, False), "Louisiana": (125, False), "Maine": (175, False), "Maryland": (100, False),
+    "Massachusetts": (500, False), "Michigan": (50, False), "Minnesota": (155, False), "Mississippi": (50, False),
+    "Missouri": (50, False), "Montana": (35, False), "Nebraska": (100, False), "Nevada": (425, False),
+    "New Hampshire": (100, False), "New Jersey": (125, False), "New Mexico": (50, False), "New York": (200, False),
+    "North Carolina": (125, False), "North Dakota": (135, False), "Ohio": (99, False), "Oklahoma": (100, False),
+    "Oregon": (100, False), "Pennsylvania": (125, False), "Rhode Island": (150, False), "South Carolina": (110, False),
+    "South Dakota": (150, False), "Tennessee": (300, False), "Texas": (300, False), "Utah": (59, False),
+    "Vermont": (155, False), "Virginia": (100, False), "Washington": (200, False), "West Virginia": (100, False),
+    "Wisconsin": (130, False), "Wyoming": (100, False),
+}
 
 
 def template(form: str, year: int) -> Path | None:
@@ -211,9 +231,17 @@ def sc_values(a: dict, t: dict, c: dict) -> dict:
     for k, _l, fld in EXPENSES:
         if fld and c["exp"].get(k):
             v[fld] = _m(c["exp"][k])
-    if c["exp"].get("other"):                              # Part V line 48 -> 27b
-        v.update({"f2_15[0]": t.get("exp_other_desc") or "Other business expenses", "f2_16[0]": _m(c["exp"]["other"]),
-                  "f2_33[0]": _m(c["exp"]["other"]), "f1_39[0]": _m(c["exp"]["other"])})
+    part5 = []                                             # Part V rows (description, amount) -> line 48 -> 27b
+    if c["exp"].get("formation"):
+        part5.append((f"Start-up cost: {t.get('llc_state') or 'state'} LLC formation filing fee", c["exp"]["formation"]))
+    if c["exp"].get("other"):
+        part5.append((t.get("exp_other_desc") or "Other business expenses", c["exp"]["other"]))
+    rows = [("f2_15[0]", "f2_16[0]"), ("f2_17[0]", "f2_18[0]"), ("f2_19[0]", "f2_20[0]"), ("f2_21[0]", "f2_22[0]")]
+    for (fd, fa), (desc, amt) in zip(rows, part5):
+        v[fd], v[fa] = desc, _m(amt)
+    if part5:
+        tot = sum(x[1] for x in part5)
+        v.update({"f2_33[0]": _m(tot), "f1_39[0]": _m(tot)})
     if c["cogs"]:                                          # Part III – purchases = cost of goods sold, no inventory
         v.update({"c2_1[0]": True, "c2_4[1]": True, "f2_1[0]": "0", "f2_2[0]": _m(c["cogs"]), "f2_6[0]": _m(c["cogs"]),
                   "f2_7[0]": "0", "f2_8[0]": _m(c["cogs"])})
