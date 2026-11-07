@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns="http://xmlgw.companieshouse.gov.uk/Header" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:bs="http://xmlgw.companieshouse.gov.uk/Header" targetNamespace="http://xmlgw.companieshouse.gov.uk/Header" elementFormDefault="qualified" attributeFormDefault="unqualified" version="2.11" id="FormSubmission">
+	<xs:element name="FormSubmission">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="FormHeader">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element name="CompanyNumber" type="xs:integer" minOccurs="0">
+								<xs:annotation>
+									<xs:documentation>The Company number, digits only</xs:documentation>
+								</xs:annotation>
+							</xs:element>
+							<xs:element name="CompanyType" minOccurs="0">
+								<xs:annotation>
+									<xs:documentation>The country of incorporation and company type classification.
+
+If the filing is for a Northern Ireland LLP, you must submit 'NC' in the CompanyType element</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:enumeration value="EW"/>
+										<xs:enumeration value="SC"/>
+										<xs:enumeration value="NI"/>
+										<xs:enumeration value="R"/>
+										<xs:enumeration value="OC"/>
+										<xs:enumeration value="SO"/>
+										<xs:enumeration value="NC"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="CompanyName">
+								<xs:annotation>
+									<xs:documentation>The content of the CompanyName element will be converted to upper case on receipt at Companies House for Incorporation submissions</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="nonEmptyNameAddressString">
+										<xs:minLength value="3"/>
+										<xs:maxLength value="160"/>
+										<xs:whiteSpace value="collapse"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="CompanyAuthenticationCode" minOccurs="0">
+								<xs:annotation>
+									<xs:documentation>Authentication Code of the Company for which the submission relates</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:minLength value="6"/>
+										<xs:maxLength value="8"/>
+										<xs:whiteSpace value="preserve"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="PackageReference" type="xs:string">
+								<xs:annotation>
+									<xs:documentation>Software Package reference allocated to Software Vendor by Companies House</xs:documentation>
+								</xs:annotation>
+							</xs:element>
+							<xs:element name="Language" minOccurs="0">
+								<xs:annotation>
+									<xs:documentation>The language used in the submission. Currently only EN (English) and CY (Welsh) are supported</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:enumeration value="EN"/>
+										<xs:enumeration value="CY"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="FormIdentifier" type="xs:string">
+								<xs:annotation>
+									<xs:documentation>Identifier of the attached form, such as 'OfficerAppointment'</xs:documentation>
+								</xs:annotation>
+							</xs:element>
+							<xs:element name="SubmissionNumber">
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:maxLength value="6"/>
+										<xs:whiteSpace value="collapse"/>
+										<xs:minLength value="6"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:sequence minOccurs="0">
+								<xs:element name="ContactName" type="nameAddressString"/>
+								<xs:element name="ContactNumber">
+									<xs:simpleType>
+										<xs:restriction base="xs:string">
+											<xs:maxLength value="25"/>
+										</xs:restriction>
+									</xs:simpleType>
+								</xs:element>
+							</xs:sequence>
+							<xs:element name="CustomerReference" minOccurs="0">
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:maxLength value="25"/>
+										<xs:minLength value="0"/>
+										<xs:pattern value="[A-Za-z0-9]*"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="DateSigned" type="xs:date"/>
+				<xs:element name="Form">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:any namespace="##any" minOccurs="0">
+								<xs:annotation>
+									<xs:documentation>Contains the XML document of the form to be submitted. E.g. OfficerAppointment or AnnualReturn</xs:documentation>
+								</xs:annotation>
+							</xs:any>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="AdditionalInformation" minOccurs="0">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:any namespace="##any">
+								<xs:annotation>
+									<xs:documentation>Contains the XML document of the additional information e.g. Corporate Tax Information for an Incorporation</xs:documentation>
+								</xs:annotation>
+							</xs:any>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Document" minOccurs="0" maxOccurs="4">
+					<xs:annotation>
+						<xs:documentation>May contain an optional document attachment</xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element name="Data">
+								<xs:simpleType>
+									<xs:restriction base="xs:base64Binary">
+										<xs:maxLength value="30000000"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="Date" type="xs:date" minOccurs="0"/>
+							<xs:element name="Filename" minOccurs="0">
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:maxLength value="32"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="ContentType">
+								<xs:annotation>
+									<xs:documentation>Mime content type of supplied data</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:enumeration value="application/vnd.hp-pcl"/>
+										<xs:enumeration value="application/xml"/>
+										<xs:enumeration value="application/pdf"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="Category">
+								<xs:annotation>
+									<xs:documentation>Identify the category of document supplied</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="xs:string">
+										<xs:enumeration value="MEMARTS"/>
+										<xs:enumeration value="MEM"/>
+										<xs:enumeration value="ARTS"/>
+										<xs:enumeration value="SUPPNAMEAUTH"/>
+										<xs:enumeration value="ACCOUNTS"/>
+										<xs:enumeration value="SUPPEXISTNAME"/>
+										<xs:enumeration value="DEED"/>
+										<xs:enumeration value="DEEDSUPP"/>
+										<xs:enumeration value="CIC36"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:simpleType name="nameAddressString">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="[-,.:; 0-9A-Z&#x26;@$&#xA3;&#xA5;&#x20AC;&#x27;&#x22;&#xAB;&#xBB;&#x2018;&#x2019;&#x201C;&#x201D;?!/\\()\[\]{}&#x3C;&#x3E;*=#%+&#xC0;&#xC1;&#xC2;&#xC3;&#xC4;&#xC5;&#x100;&#x102;&#x104;&#xC6;&#x1FC;&#xC7;&#x106;&#x108;&#x10A;&#x10C;&#xDE;&#x10E;&#xD0;&#xC8;&#xC9;&#xCA;&#xCB;&#x112;&#x114;&#x116;&#x118;&#x11A;&#x11C;&#x11E;&#x120;&#x122;&#x124;&#x126;&#xCC;&#xCD;&#xCE;&#xCF;&#x128;&#x12A;&#x12C;&#x12E;&#x130;&#x134;&#x136;&#x139;&#x13B;&#x13D;&#x13F;&#x141;&#xD1;&#x143;&#x145;&#x147;&#x14A;&#xD2;&#xD3;&#xD4;&#xD5;&#xD6;&#xD8;&#x14C;&#x14E;&#x150;&#x1FE;&#x152;&#x154;&#x156;&#x158;&#x15A;&#x15C;&#x15E;&#x160;&#x162;&#x164;&#x166;&#xD9;&#xDA;&#xDB;&#xDC;&#x168;&#x16A;&#x16C;&#x16E;&#x170;&#x172;&#x174;&#x1E80;&#x1E82;&#x1E84;&#x1EF2;&#xDD;&#x176;&#x178;&#x179;&#x17B;&#x17D;a-z&#xC0;&#xD6;&#xD8;&#x17F;&#x192;&#x1FA;&#x1FF;&#x1E80;&#x1E85;&#x1EF2;&#x1EF3;]*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="nonEmptyNameAddressString">
+		<xs:restriction base="nameAddressString">
+			<xs:minLength value="1"/>
+			<xs:pattern value="\S+.*"/>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

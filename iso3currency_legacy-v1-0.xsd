@@ -1,0 +1,1 @@
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" version="1.0"><xsd:simpleType name="legacy_iso3currency"><xsd:restriction base="xsd:string"><xsd:length value="3"/><xsd:enumeration value="TST"/></xsd:restriction></xsd:simpleType></xsd:schema>

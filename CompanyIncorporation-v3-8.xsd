@@ -1,0 +1,391 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns="http://xmlgw.companieshouse.gov.uk" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://xmlgw.companieshouse.gov.uk" elementFormDefault="qualified" attributeFormDefault="unqualified" version="3.8" id="CompanyInc">
+	<xs:include schemaLocation="PSCBaseTypes-v1-4.xsd"/>
+	<xs:include schemaLocation="baseTypes-v3-7.xsd"/>
+	<xs:element name="CompanyIncorporation" type="CompanyIncorporationType"/>
+	<xs:complexType name="CompanyIncorporationType">
+		<xs:annotation>
+			<xs:documentation>Application for Registration of a Company in accordance with Section 9 of the Companies Act 2006.</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="CompanyType">
+				<xs:annotation>
+					<xs:documentation>Company type and liability of members </xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="PLC"/>
+						<xs:enumeration value="BYSHR"/>
+						<xs:enumeration value="BYGUAR"/>
+						<xs:enumeration value="BYGUAREXEMPT"/>
+						<xs:enumeration value="LLP"/>
+						<xs:enumeration value="LLPDES"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="Cic" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Community Interest Company (to optionally set only for CompanyTypes BYSHR | BYGUAR)</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="true"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="CountryOfIncorporation">
+				<xs:annotation>
+					<xs:documentation>Situation of registered office, England and Wales, Wales, Scotland, Norther Ireland </xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="2"/>
+						<xs:maxLength value="2"/>
+						<xs:enumeration value="EW"/>
+						<xs:enumeration value="SC"/>
+						<xs:enumeration value="WA"/>
+						<xs:enumeration value="NI"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="RegisteredOfficeAddress" type="ROAddressType"/>
+			<xs:element name="DataMemorandum" type="xs:boolean">
+				<xs:annotation>
+					<xs:documentation>Indicator to create image of the memorandum of association from data</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Articles" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Type of Articles of Association</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="BYSHRMODEL"/>
+						<xs:enumeration value="BYGUARMODEL"/>
+						<xs:enumeration value="PLCMODEL"/>
+						<xs:enumeration value="BYSHAREAMEND"/>
+						<xs:enumeration value="BYGUARAMEND"/>
+						<xs:enumeration value="PLCAMEND"/>
+						<xs:enumeration value="BESPOKE"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="RestrictedArticles" type="xs:boolean" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>The company has legal restriction on changes to its articles</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Appointment" maxOccurs="unbounded">
+				<xs:annotation>
+					<xs:documentation>Proposed officers</xs:documentation>
+				</xs:annotation>
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element ref="ConsentToAct"/>
+						<xs:choice>
+							<xs:element name="Director">
+								<xs:complexType>
+									<xs:complexContent>
+										<xs:extension base="IncorporationDirectorAppointmentType"/>
+									</xs:complexContent>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="Secretary" type="IncorporationSecretaryAppointmentType"/>
+							<xs:element name="Member" type="IncorporationMemberAppointmentType"/>
+						</xs:choice>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="PSCs">
+				<xs:complexType>
+					<xs:choice>
+						<xs:element name="NoPSCStatement" type="IncorporationCompanyLevelStatementType">
+							<xs:annotation>
+								<xs:documentation>This statement applies when the company/LLP does not have a PSC</xs:documentation>
+							</xs:annotation>
+						</xs:element>
+						<xs:element name="PSC" maxOccurs="unbounded">
+							<xs:annotation>
+								<xs:documentation>You must list all of the Persons with Significant Control for the proposed company</xs:documentation>
+							</xs:annotation>
+							<xs:complexType>
+								<xs:sequence>
+									<xs:element name="PSCNotification" type="IncorporationPSCNotificationType"/>
+								</xs:sequence>
+							</xs:complexType>
+						</xs:element>
+					</xs:choice>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="StatementOfCapital" type="IncorporationStatementOfCapitalType" minOccurs="0"/>
+			<xs:element name="Subscribers" minOccurs="0" maxOccurs="unbounded">
+				<xs:annotation>
+					<xs:documentation>Initial shareholdings </xs:documentation>
+				</xs:annotation>
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="SubscriberPersonType">
+							<xs:sequence>
+								<xs:element name="Shares" type="IncorporationAllotmentType" maxOccurs="unbounded"/>
+								<xs:element name="MemorandumStatement" minOccurs="0" maxOccurs="1">
+									<xs:simpleType>
+										<xs:restriction base="xs:string">
+											<xs:enumeration value="Each subscriber to this memorandum of association wishes to form a company under the Companies Act 2006 and agrees to become a member of the company."/>
+											<xs:enumeration value="Each subscriber to this memorandum of association wishes to form a company under the Companies Act 2006 and agrees to become a member of the company and to take at least one share."/>
+										</xs:restriction>
+									</xs:simpleType>
+								</xs:element>
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Guarantors" minOccurs="0" maxOccurs="unbounded">
+				<xs:annotation>
+					<xs:documentation>Statement of Guarantee </xs:documentation>
+				</xs:annotation>
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="GuarantorType">
+							<xs:sequence>
+								<xs:element name="MemorandumStatement" minOccurs="0" maxOccurs="1">
+									<xs:simpleType>
+										<xs:restriction base="xs:string">
+											<xs:enumeration value="Each subscriber to this memorandum of association wishes to form a company under the Companies Act 2006 and agrees to become a member of the company."/>
+											<xs:enumeration value="Each subscriber to this memorandum of association wishes to form a company under the Companies Act 2006 and agrees to become a member of the company and to take at least one share."/>
+										</xs:restriction>
+									</xs:simpleType>
+								</xs:element>
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Authoriser">
+				<xs:complexType>
+					<xs:choice>
+						<xs:element name="Agent" type="AgentType">
+							<xs:annotation>
+								<xs:documentation>Statement of compliance delivered by an Agent </xs:documentation>
+							</xs:annotation>
+						</xs:element>
+						<xs:element name="Solicitor" type="AuthoriserType">
+							<xs:annotation>
+								<xs:documentation>Statement of compliance delivered by a Solicitor </xs:documentation>
+							</xs:annotation>
+						</xs:element>
+						<xs:element name="Member" type="AuthoriserType">
+							<xs:annotation>
+								<xs:documentation>Statement of compliance delivered by a Designated Member </xs:documentation>
+							</xs:annotation>
+						</xs:element>
+						<xs:element name="Subscribers">
+							<xs:annotation>
+								<xs:documentation>Statement of compliance delivered by the Subscribers</xs:documentation>
+							</xs:annotation>
+							<xs:complexType>
+								<xs:sequence>
+									<xs:element name="Subscriber" type="AuthoriserType" maxOccurs="unbounded"/>
+								</xs:sequence>
+							</xs:complexType>
+						</xs:element>
+					</xs:choice>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="SameDay" type="xs:boolean">
+				<xs:annotation>
+					<xs:documentation>True to request incorporation to be perfomed the same day</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="SameName" type="xs:boolean" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Indicates if supporting data is included to support the use of an existing name</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="NameAuthorisation" type="xs:boolean" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Indicates if supporting data is attached to support the allocation of a name needing authorisation</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="RejectReference" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Companies House supplied reference linking to a previously rejected application</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="8"/>
+						<xs:maxLength value="9"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element ref="SICCodes" minOccurs="0"/>
+			<xs:element name="StateSingleMemberCompany" type="xs:boolean" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>This information is only required if the company has elected to keep it’s register of members’ information on the public record.</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="RegisteredEmailAddress" type="RegisteredEmailAddress"/>
+			<xs:element name="AcceptLawfulPurposeStatement" type="AcceptLawfulPurposeStatement" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>The subscribers confirm that the company has been formed for lawful purposes.</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="IncDesignation">
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="DIR"/>
+				<xs:enumeration value="SEC"/>
+				<xs:enumeration value="SOLICITOR"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="Registers"/>
+	<xs:complexType name="IncorpPersonType">
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Person" type="PersonNameType"/>
+				<xs:element name="Corporate">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="NameType">
+								<xs:sequence>
+									<xs:element ref="CorporateName"/>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+			<xs:element name="Address" type="AddressBaseType"/>
+			<xs:element name="Authentication" type="SubscriberAuthorisationType" minOccurs="1" maxOccurs="1" />
+			<xs:element name="MemberClass" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>This information is only required if the company has elected to keep it’s register of members’ information on the public record and the company has more than one class of members.</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:maxLength value="50"/>
+						<xs:minLength value="1"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AuthoriserType">
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Person" type="PersonNameType"/>
+				<xs:element name="Corporate">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="NameType">
+								<xs:sequence>
+									<xs:element ref="CorporateName"/>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+			<xs:element name="Authentication" type="AuthoriserAuthorisationType" minOccurs="1" maxOccurs="1" />
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SubscriberPersonType">
+		<xs:complexContent>
+			<xs:extension base="IncorpPersonType"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="AgentType">
+		<xs:complexContent>
+			<xs:extension base="AuthoriserType">
+				<xs:sequence>
+					<xs:element name="Address" type="AddressBaseType"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GuarantorType">
+		<xs:complexContent>
+			<xs:extension base="IncorpPersonType">
+				<xs:sequence>
+					<xs:element name="AmountGuaranteed">
+						<xs:annotation>
+							<xs:documentation>Description of the amount guaranteed</xs:documentation>
+						</xs:annotation>
+						<xs:simpleType>
+							<xs:restriction base="nonEmptyOtherDataString">
+								<xs:maxLength value="100"/>
+							</xs:restriction>
+						</xs:simpleType>
+					</xs:element>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="IncorporationAllotmentType">
+		<xs:sequence>
+			<xs:element ref="ShareClass"/>
+			<xs:element name="NumShares">
+				<xs:annotation>
+					<xs:documentation>Used to indicate the number of shares</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:positiveInteger">
+						<xs:totalDigits value="15"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element ref="AmountPaidDuePerShare"/>
+			<xs:element ref="AmountUnpaidPerShare"/>
+			<xs:element name="ShareCurrency" type="current_iso3currency"/>
+			<xs:element ref="ShareValue"/>
+			<xs:element name="ShareReference" type="xs:string" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Only required if shares are to be sequentially numbered</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="IncorporationStatementOfCapitalType">
+		<xs:sequence>
+			<xs:element name="Capital" maxOccurs="unbounded">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element ref="TotalAmountUnpaid"/>
+						<xs:element name="TotalNumberOfIssuedShares">
+							<xs:simpleType>
+								<xs:restriction base="xs:positiveInteger">
+									<xs:totalDigits value="15"/>
+								</xs:restriction>
+							</xs:simpleType>
+						</xs:element>
+						<xs:element name="ShareCurrency" type="iso3currency"/>
+						<xs:element ref="TotalAggregateNominalValue"/>
+						<xs:element name="Shares" maxOccurs="unbounded">
+							<xs:complexType>
+								<xs:sequence>
+									<xs:element ref="ShareClass"/>
+									<xs:element ref="PrescribedParticulars"/>
+									<xs:element name="NumShares">
+										<xs:annotation>
+											<xs:documentation>Used to indicate the number of shares</xs:documentation>
+										</xs:annotation>
+										<xs:simpleType>
+											<xs:restriction base="xs:positiveInteger">
+												<xs:totalDigits value="15"/>
+											</xs:restriction>
+										</xs:simpleType>
+									</xs:element>
+									<xs:element ref="AggregateNominalValue"/>
+								</xs:sequence>
+							</xs:complexType>
+						</xs:element>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

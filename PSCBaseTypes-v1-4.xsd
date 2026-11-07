@@ -1,0 +1,939 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- edited with XMLSpy v2009 sp1 (http://www.altova.com) by Suzanne Wadden (Companies House) -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns="http://xmlgw.companieshouse.gov.uk" targetNamespace="http://xmlgw.companieshouse.gov.uk" elementFormDefault="qualified" attributeFormDefault="unqualified" version="1.0" id="PSCBaseTypes">
+	<xs:complexType name="PSCCorporateEntityType">
+		<xs:annotation>
+			<xs:documentation>A corporate entity as a person with significant control notification</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element ref="CorporateName"/>
+			<xs:element name="Address" type="CompanyAddressType"/>
+			<xs:element name="PSCCompanyIdentification" type="CorporatePSCIdentificationType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCLegalPersonType">
+		<xs:annotation>
+			<xs:documentation>A corporate sole as a person with significant control notification</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element ref="LegalPersonName"/>
+			<xs:element name="Address" type="CompanyAddressType"/>
+			<xs:element name="LegalPersonIdentification" type="LegalPersonIdentificationType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="PSCCompanyIdentification">
+		<xs:annotation>
+			<xs:documentation>Company Indentification Details for Corporate PSC's</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="PSCPlaceRegistered" minOccurs="0">
+					<xs:annotation>
+						<xs:documentation>Name of the register where the company is registered e.g. Companies House or Isle of Man Companies Registry</xs:documentation>
+					</xs:annotation>
+					<xs:simpleType>
+						<xs:restriction base="nonEmptyNameAddressString">
+							<xs:minLength value="1"/>
+							<xs:maxLength value="160"/>
+							<xs:whiteSpace value="collapse"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+				<xs:element name="PSCRegistrationNumber" minOccurs="0">
+					<xs:simpleType>
+						<xs:restriction base="nonEmptyOtherDataString">
+							<xs:minLength value="1"/>
+							<xs:maxLength value="160"/>
+							<xs:whiteSpace value="collapse"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+				<xs:element name="LawGoverned">
+					<xs:annotation>
+						<xs:documentation>The legal authority supervising the company</xs:documentation>
+					</xs:annotation>
+					<xs:simpleType>
+						<xs:restriction base="nonEmptyNameAddressString">
+							<xs:minLength value="1"/>
+							<xs:maxLength value="160"/>
+							<xs:whiteSpace value="collapse"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+				<xs:element name="LegalForm">
+					<xs:annotation>
+						<xs:documentation>The legal form of the company as defined its country of registration</xs:documentation>
+					</xs:annotation>
+					<xs:simpleType>
+						<xs:restriction base="nonEmptyOtherDataString">
+							<xs:minLength value="1"/>
+							<xs:maxLength value="160"/>
+							<xs:whiteSpace value="collapse"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+				<xs:element name="CountryOrState" minOccurs="0">
+					<xs:annotation>
+						<xs:documentation>The country or state where the company is registered</xs:documentation>
+					</xs:annotation>
+					<xs:simpleType>
+						<xs:restriction base="nonEmptyNameAddressString">
+							<xs:minLength value="1"/>
+							<xs:maxLength value="50"/>
+							<xs:whiteSpace value="collapse"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:complexType name="PSCIndividualType">
+		<xs:sequence>
+			<xs:element ref="Title" minOccurs="0"/>
+			<xs:element ref="Forename" minOccurs="0"/>
+			<xs:element ref="OtherForenames" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>More than one name can be entered separated by spaces</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element ref="Surname"/>
+			<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+			<xs:element ref="DOB"/>
+			<xs:element ref="Nationality"/>
+			<xs:element ref="CountryOfResidence"/>
+			<xs:element name="ResidentialAddress" type="ResidentialAddressType"/>
+			<xs:element name="VerificationDetails" type="VerificationDetailsType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCIndividualReturnType">
+		<xs:complexContent>
+			<xs:extension base="PersonReturnType">
+				<xs:sequence>
+					<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+					<xs:element ref="DOB"/>
+					<xs:element ref="Nationality"/>
+					<xs:element ref="CountryOfResidence"/>
+					<xs:element name="ResidentialAddress" type="ResidentialAddressType"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="NatureOfControlsType">
+		<xs:sequence>
+			<xs:element name="NatureOfControl" maxOccurs="24">
+				<xs:simpleType>
+					<xs:annotation>
+						<xs:documentation>The nature of control</xs:documentation>
+					</xs:annotation>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="2"/>
+						<xs:maxLength value="160"/>
+						<xs:enumeration value="OWNERSHIPOFSHARES_25TO50PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly more than 25% but not more than 50% of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_50TO75PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly more than 50% but less than 75% of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_75TO100PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly 75% or more of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_25TO50PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly more than 25% but not more than 50% of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_50TO75PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly more than 50% but less than 75% of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_75TO100PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly 75% or more of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_25TO50PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly more than 25% but not more than 50% of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_50TO75PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly more than 50% but less than 75% of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="OWNERSHIPOFSHARES_75TO100PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly 75% or more of the shares in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_25TO50PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly more than 25% but not more than 50% of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_50TO75PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly more than 50% but less than 75% of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_75TO100PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly 75% or more of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_25TO50PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly more than 25% but not more than 50% of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_50TO75PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly more than 50% but less than 75% of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_75TO100PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly 75% or more of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_25TO50PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly more than 25% but not more than 50% of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_50TO75PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly more than 50% but less than 75% of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_75TO100PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly 75% or more of the voting rights in the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOAPPOINTANDREMOVEDIRECTORS">
+							<xs:annotation>
+								<xs:documentation>The PSC has the right to appoint/remove, directly or indirectly, a majority of the board of directors of the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOAPPOINTANDREMOVEDIRECTORS_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust have the right to appoint/remove, directly or indirectly, a majority of the board of directors of the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOAPPOINTANDREMOVEDIRECTORS_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm have the right to appoint/remove, directly or indirectly, a majority of the board of directors of the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="SIGINFLUENCECONTROL">
+							<xs:annotation>
+								<xs:documentation>The PSC has the right to exercise, or actually exercises, significant influence or control over the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="SIGINFLUENCECONTROL_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust have the right to exercise, or actually exercises, significant influence or control over the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="SIGINFLUENCECONTROL_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm have the right to exercise, or actually exercises, significant influence or control over the company</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LLPNatureOfControlsType">
+		<xs:sequence>
+			<xs:element name="NatureOfControl" maxOccurs="24">
+				<xs:simpleType>
+					<xs:annotation>
+						<xs:documentation>The nature of control for Limited Liability Partnerships</xs:documentation>
+					</xs:annotation>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="2"/>
+						<xs:maxLength value="160"/>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_25TO50PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly, the right to share in more than 25% but not more than 50% of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_50TO75PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly, the right to share in more than 50% but less than 75% of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_75TO100PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly, the right to share in 75% or more of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_25TO50PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly the right to share in more than 25% but not more than 50% of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_50TO75PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly the right to share in more than 50% but less than 75% of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_75TO100PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly the right to share in 75% or more of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_25TO50PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly the right to share in more than  25% but not more than 50% of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_50TO75PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly the right to share in more than 50% but less than 75% of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOSHARESURPLUSASSETS_75TO100PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly the right to share in 75% or more of any surplus assets of the LLP on a winding up</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_25TO50PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly more than 25% but not more than 50% of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_50TO75PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly more than 50% but less than 75% of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_75TO100PERCENT">
+							<xs:annotation>
+								<xs:documentation>The PSC holds, directly or indirectly 75% or more of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_25TO50PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly more than 25% but not more than 50% of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_50TO75PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly more than 50% but less than 75% of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_75TO100PERCENT_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust hold, directly or indirectly 75% or more of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_25TO50PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly more than 25% but not more than 50% of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_50TO75PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly more than 50% but less than 75% of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="VOTINGRIGHTS_75TO100PERCENT_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm hold, directly or indirectly 75% or more of the voting rights in the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOAPPOINTANDREMOVEMEMBERS">
+							<xs:annotation>
+								<xs:documentation>The PSC has the right to appoint/remove, directly or indirectly, a majority of the members who are entitled to take part in the management of the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOAPPOINTANDREMOVEMEMBERS_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust have the right to appoint/remove, directly or indirectly, a majority of the members who are entitled to take part in the management of the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="RIGHTTOAPPOINTANDREMOVEMEMBERS_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm have the right to appoint/remove, directly or indirectly, a majority of the members who are entitled to take part in the management of the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="SIGINFLUENCECONTROL">
+							<xs:annotation>
+								<xs:documentation>The PSC has the right to exercise, or actually exercises, significant influence or control over the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="SIGINFLUENCECONTROL_AS_TRUST">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a trust and the trustees of that trust have the right to exercise, or actually exercises, significant influence or control over the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:enumeration value="SIGINFLUENCECONTROL_AS_FIRM">
+							<xs:annotation>
+								<xs:documentation>The PSC has significant control over a firm and the members of that firm have the right to exercise, or actually exercises, significant influence or control over the LLP</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="NotificationDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date of notification</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="CessationDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date of cessation</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:complexType name="CorporatePSCIdentificationType">
+		<xs:sequence>
+			<xs:element name="PSCPlaceRegistered" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Name of the register where the company is registered e.g. Companies House or Isle of Man Companies Registry</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyNameAddressString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="160"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="PSCRegistrationNumber" minOccurs="0">
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyOtherDataString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="160"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="LawGoverned">
+				<xs:annotation>
+					<xs:documentation>The legal authority supervising the company</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyNameAddressString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="160"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="LegalForm">
+				<xs:annotation>
+					<xs:documentation>The legal form of the company as defined its country of registration</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyOtherDataString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="160"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="CountryOrState" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>The country or state where the company is registered</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyNameAddressString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="50"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="LegalPersonName">
+		<xs:annotation>
+			<xs:documentation>Legal person name</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="160"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="LegalPersonIdentificationType">
+		<xs:sequence>
+			<xs:element name="LawGoverned">
+				<xs:annotation>
+					<xs:documentation>The legal authority supervising the company</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyNameAddressString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="160"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="LegalForm">
+				<xs:annotation>
+					<xs:documentation>The legal form of the company as defined its country of registration</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyOtherDataString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="160"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCNotificationReturnType">
+		<xs:annotation>
+			<xs:documentation>Notification of a person with significant control (PSC)</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Individual" type="PSCIndividualReturnType"/>
+				<xs:element name="Corporate" type="PSCCorporateEntityType"/>
+				<xs:element name="LegalPerson" type="PSCLegalPersonType"/>
+			</xs:choice>
+			<xs:choice>
+				<xs:element name="NatureOfControls" type="NatureOfControlsType"/>
+				<xs:element name="LLPNatureOfControls" type="LLPNatureOfControlsType"/>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCResidentialAddressType">
+		<xs:choice>
+			<xs:element name="SameAsServiceAddress">
+				<xs:annotation>
+					<xs:documentation>The address is the same as Service address</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="4"/>
+						<xs:enumeration value="true"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:sequence>
+				<xs:element name="Address" type="AddressBaseType"/>
+			</xs:sequence>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="PSCCompanyAddressType">
+		<xs:complexContent>
+			<xs:extension base="AddressBaseType">
+				<xs:sequence>
+					<xs:element ref="PoBox" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:element name="SuperSecureIndividual">
+		<xs:annotation>
+			<xs:documentation>Individual PSC with 790ZG protection.</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="true"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:simpleType name="IncorporationCompanyLevelStatementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NO_INDIVIDUAL_OR_ENTITY_WITH_SIGNFICANT_CONTROL">
+				<xs:annotation>
+					<xs:documentation>The company knows or has reasonable cause to believe that there is no registrable person or registrable relevant legal entity in relation to the company</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CompanyLevelStatementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NO_INDIVIDUAL_OR_ENTITY_WITH_SIGNFICANT_CONTROL">
+				<xs:annotation>
+					<xs:documentation>The company knows or has reasonable cause to believe that there is no registrable person or registrable relevant legal entity in relation to the company</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="STEPS_TO_FIND_PSC_NOT_YET_COMPLETED">
+				<xs:annotation>
+					<xs:documentation>The company has not entered the particulars of any registrable person or registrable relevant legal entity and has not yet completed taking reasonable steps to find out if there is anyone who is a registrable person or a registrable relevant legal entity in relation to the company under section 790D of the Act CANNOT BE USED ON PSCStatementNotification SCHEMA</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PSCLevelStatementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="PSC_EXISTS_BUT_NOT_IDENTIFIED">
+				<xs:annotation>
+					<xs:documentation>The company knows or has reasonable cause to believe there is a registrable person in relation to the company and has been unable to identify the registrable person CANNOT BE USED ON PSCStatementNotification SCHEMA</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="PSC_DETAILS_NOT_CONFIRMED">
+				<xs:annotation>
+					<xs:documentation>The company has identified a registrable person in relation to the company and all the required particulars of that person have not been confirmed CANNOT BE USED ON PSCStatementNotification SCHEMA</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="PSC_CONTACTED_BUT_NO_RESPONSE">
+				<xs:annotation>
+					<xs:documentation>The company has given notice under section 790D or DA of the Act; and the addressees of the notice have failed to comply with the notice within the time specified in it</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="RESTRICTIONS_NOTICE_ISSUED_TO_PSC">
+				<xs:annotation>
+					<xs:documentation>The company has issued a restriction notice under paragraph 1 of Schedule 1B of the Companies Act 2006</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="AWAITING_CONFIRMATION_FROM_PSC">
+				<xs:annotation>
+					<xs:documentation>The company knows or has cause to believe that a person has become a registrable person or a registrable relevant legal entity in relation to the company, but it has not yet had confirmation as mentioned in section 790LA(1)</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="PSCLinkedStatementType">
+		<xs:annotation>
+			<xs:documentation>PSC details provided in a LinkedStatement must relate to a PSC already filed with Companies House</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="Statement" type="StatementType"/>
+			<xs:choice>
+				<xs:element name="Individual" type="PSCIdentificationType">
+					<xs:annotation>
+						<xs:documentation>Individual PSC without 790ZG protection.</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+				<xs:element ref="SuperSecureIndividual"/>
+				<xs:element name="Corporate">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="CorporateName"/>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="LegalPerson">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="LegalPersonName"/>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:simpleType name="StatementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="PSC_HAS_FAILED_TO_CONFIRM_CHANGED_DETAILS">
+				<xs:annotation>
+					<xs:documentation>The company has given a notice under section 790E or EA of the Act and the addressee has failed to comply with the notice within the time specified in it</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="PSCNotificationType">
+		<xs:annotation>
+			<xs:documentation>Notification of a person with significant control (PSC)</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Individual" type="PSCIndividualType">
+					<xs:annotation>
+						<xs:documentation>Individual PSC without 790ZG protection.</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+				<xs:element ref="SuperSecureIndividual"/>
+				<xs:element name="Corporate" type="PSCCorporateEntityType"/>
+				<xs:element name="LegalPerson" type="PSCLegalPersonType"/>
+			</xs:choice>
+			<xs:choice>
+				<xs:element name="NatureOfControls" type="NatureOfControlsType"/>
+				<xs:element name="LLPNatureOfControls" type="LLPNatureOfControlsType"/>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="IncorporationPSCNotificationType">
+		<xs:annotation>
+			<xs:documentation>Notification of a person with significant control (PSC)</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Individual">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PSCIndividualType">
+								<xs:sequence>
+									<xs:element name="ConsentStatement">
+										<xs:annotation>
+											<xs:documentation>You must indicate that this PSC’s details have been given with their knowledge</xs:documentation>
+										</xs:annotation>
+										<xs:simpleType>
+											<xs:restriction base="xs:boolean">
+												<xs:pattern value="true"/>
+											</xs:restriction>
+										</xs:simpleType>
+									</xs:element>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Corporate" type="PSCCorporateEntityType"/>
+				<xs:element name="LegalPerson" type="PSCLegalPersonType"/>
+				<xs:element ref="SuperSecureIndividual"/>
+			</xs:choice>
+			<xs:choice>
+				<xs:element name="NatureOfControls" type="NatureOfControlsType"/>
+				<xs:element name="LLPNatureOfControls" type="LLPNatureOfControlsType"/>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCChangeDetailsType">
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Individual">
+					<xs:annotation>
+						<xs:documentation>Individual PSC without 790ZG protection.</xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PSCIdentificationType">
+								<xs:sequence>
+									<xs:element name="Change" minOccurs="0">
+										<xs:complexType>
+											<xs:sequence>
+												<xs:element name="Name" type="PersonChangeType" minOccurs="0"/>
+												<xs:element name="ServiceAddress" type="ServiceAddressType" minOccurs="0"/>
+												<xs:element name="ResidentialAddress" type="PSCResidentialAddressType" minOccurs="0"/>
+												<xs:element ref="Nationality" minOccurs="0"/>
+												<xs:element name="CountryOfResidence" minOccurs="0">
+													<xs:simpleType>
+														<xs:restriction base="nonEmptyNameAddressString">
+															<xs:maxLength value="50"/>
+															<xs:whiteSpace value="collapse"/>
+														</xs:restriction>
+													</xs:simpleType>
+												</xs:element>
+												<xs:choice minOccurs="0">
+													<xs:element name="NatureOfControls" type="NatureOfControlsType">
+														<xs:annotation>
+															<xs:documentation>NatureOfControls supplied will overwrite the previous nature of controls.</xs:documentation>
+														</xs:annotation>
+													</xs:element>
+													<xs:element name="LLPNatureOfControls" type="LLPNatureOfControlsType">
+														<xs:annotation>
+															<xs:documentation>LLPNatureOfControls supplied will overwrite the previous nature of controls.</xs:documentation>
+														</xs:annotation>
+													</xs:element>
+												</xs:choice>
+											</xs:sequence>
+										</xs:complexType>
+									</xs:element>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+				<xs:element ref="SuperSecureIndividual"/>
+				<xs:element name="Corporate">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="CorporateName"/>
+							<xs:element name="Change" minOccurs="0">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element ref="CorporateName" minOccurs="0"/>
+										<xs:element name="Address" type="CompanyAddressType" minOccurs="0"/>
+										<xs:element name="PSCCompanyIdentification" type="CorporatePSCIdentificationType" minOccurs="0"/>
+										<xs:choice minOccurs="0">
+											<xs:element name="NatureOfControls" type="NatureOfControlsType">
+												<xs:annotation>
+													<xs:documentation>NatureOfControls supplied will overwrite the previous nature of controls.</xs:documentation>
+												</xs:annotation>
+											</xs:element>
+											<xs:element name="LLPNatureOfControls" type="LLPNatureOfControlsType">
+												<xs:annotation>
+													<xs:documentation>LLPNatureOfControls supplied will overwrite the previous nature of controls.</xs:documentation>
+												</xs:annotation>
+											</xs:element>
+										</xs:choice>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="LegalPerson">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="LegalPersonName"/>
+							<xs:element name="Change" minOccurs="0">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element ref="LegalPersonName" minOccurs="0"/>
+										<xs:element name="Address" type="CompanyAddressType" minOccurs="0"/>
+										<xs:element name="LegalPersonIdentification" type="LegalPersonIdentificationType" minOccurs="0"/>
+										<xs:choice minOccurs="0">
+											<xs:element name="NatureOfControls" type="NatureOfControlsType">
+												<xs:annotation>
+													<xs:documentation>NatureOfControls supplied will overwrite the previous nature of controls.</xs:documentation>
+												</xs:annotation>
+											</xs:element>
+											<xs:element name="LLPNatureOfControls" type="LLPNatureOfControlsType">
+												<xs:annotation>
+													<xs:documentation>LLPNatureOfControls supplied will overwrite the previous nature of controls.</xs:documentation>
+												</xs:annotation>
+											</xs:element>
+										</xs:choice>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+			<xs:element name="DateOfChange" type="xs:date">
+				<xs:annotation>
+					<xs:documentation>The date on which the change(s) to the PSC details occurred</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="ConfirmationDate" type="xs:date">
+				<xs:annotation>
+					<xs:documentation>Date the PSC confirmed they are a PSC and their details with the company/LLP</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCVerificationStatementType">
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Individual">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PSCIdentificationType">
+								<xs:sequence>
+									<xs:element name="Change" minOccurs="1">
+										<xs:complexType>
+											<xs:sequence>
+												<xs:element name="VerificationDetails" type="VerificationDetailsType" minOccurs="1"/>
+											</xs:sequence>
+										</xs:complexType>
+									</xs:element>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCCessationType">
+		<xs:sequence>
+			<xs:choice>
+				<xs:element name="Individual">
+					<xs:annotation>
+						<xs:documentation>Individual PSC without 790ZG protection.</xs:documentation>
+					</xs:annotation>
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PSCIdentificationType"/>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+				<xs:element ref="SuperSecureIndividual"/>
+				<xs:element name="Corporate">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="CorporateName"/>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="LegalPerson">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="LegalPersonName"/>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+			<xs:element ref="CessationDate">
+				<xs:annotation>
+					<xs:documentation>Date the PSC notified or confirmed they are no longer a PSC with the company</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="ConfirmationDate" type="xs:date">
+				<xs:annotation>
+					<xs:documentation>Date the PSC confirmed they are a PSC and their details with the company/LLP</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PSCStatementNotificationType">
+		<xs:choice>
+			<xs:element name="CompanyStatement" type="CompanyLevelStatementType">
+				<xs:annotation>
+					<xs:documentation>These statements apply when the company/LLP does not have a PSC or does not know who they are</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="PSCStatement" type="PSCLevelStatementType">
+				<xs:annotation>
+					<xs:documentation>These statements apply when the company/LLP believes they have a PSC but cannot provide the details</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="PSCLinkedStatement" type="PSCLinkedStatementType">
+				<xs:annotation>
+					<xs:documentation>This statement applies when a PSC has failed to provide an update of their changed details</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="PSCStatementWithdrawalType">
+		<xs:complexContent>
+			<xs:extension base="PSCStatementNotificationType">
+				<xs:sequence>
+					<xs:element name="WithdrawalDate" type="xs:date"/>
+					<xs:element name="RestrictionsNoticeWithdrawalReason" type="RestrictionsNoticeWithdrawalReasonType" minOccurs="0">
+						<xs:annotation>
+							<xs:documentation>This element should only be used in conjunction with PSCStatement RESTRICTIONS_NOTICE_ISSUED_TO_PSC</xs:documentation>
+						</xs:annotation>
+					</xs:element>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:simpleType name="RestrictionsNoticeWithdrawalReasonType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="RESTRICTIONS_NOTICE_WITHDRAWN_BY_COMPANY">
+				<xs:annotation>
+					<xs:documentation>The company has withdrawn the restrictions notice by giving a withdrawal notice</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="RESTRICTIONS_NOTICE_WITHDRAWN_BY_COURT_ORDER">
+				<xs:annotation>
+					<xs:documentation>The court has made an order that a relevant interest in the company cease to be subject to restrictions</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="PSCIdentificationType">
+		<xs:sequence>
+			<xs:element ref="Title" minOccurs="0"/>
+			<xs:element ref="Surname"/>
+			<xs:element ref="Forename" minOccurs="0"/>
+			<xs:element ref="OtherForenames" minOccurs="0"/>
+			<xs:element name="PartialDOB" type="PartialDOBType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

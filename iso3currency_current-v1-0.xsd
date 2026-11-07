@@ -1,0 +1,359 @@
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" version="1.0">
+	<xsd:simpleType name="current_iso3currency">
+		<xsd:annotation>
+			<xsd:documentation>ISO-4217 3-letter currency codes, as defined at http://www.xe.com/iso4217.htm.
+    </xsd:documentation>
+		</xsd:annotation>
+		<xsd:restriction base="xsd:string">
+			<xsd:length value="3"/>
+			<xsd:enumeration value="AED"/>
+			<xsd:enumeration value="AFN"/>
+			<xsd:enumeration value="ALL"/>
+			<xsd:enumeration value="AMD"/>
+			<xsd:enumeration value="AOA"/>
+			<xsd:enumeration value="ARS"/>
+			<xsd:enumeration value="AUD"/>
+			<xsd:enumeration value="AWG"/>
+			<xsd:enumeration value="AZN"/>
+			<xsd:enumeration value="BAM"/>
+			<xsd:enumeration value="BBD"/>
+			<xsd:enumeration value="BDT"/>
+			<xsd:enumeration value="BGN"/>
+			<xsd:enumeration value="BHD"/>
+			<xsd:enumeration value="BIF"/>
+			<xsd:enumeration value="BMD"/>
+			<xsd:enumeration value="BND"/>
+			<xsd:enumeration value="BOB"/>
+			<xsd:enumeration value="BRL"/>
+			<xsd:enumeration value="BSD"/>
+			<xsd:enumeration value="BTN"/>
+			<xsd:enumeration value="BWP"/>
+			<xsd:enumeration value="BYR"/>
+			<xsd:enumeration value="BZD"/>
+			<xsd:enumeration value="CAD"/>
+			<xsd:enumeration value="CDF"/>
+			<xsd:enumeration value="CHE"/>
+			<xsd:enumeration value="CHF"/>
+			<xsd:enumeration value="CHW"/>
+			<xsd:enumeration value="CLP"/>
+			<xsd:enumeration value="CNY"/>
+			<xsd:enumeration value="COP"/>
+			<xsd:enumeration value="CRC"/>
+			<xsd:enumeration value="CUC"/>
+			<xsd:enumeration value="CUP"/>
+			<xsd:enumeration value="CUW"/>
+			<xsd:enumeration value="CVE"/>
+			<xsd:enumeration value="CZK"/>
+			<xsd:enumeration value="DJF"/>
+			<xsd:enumeration value="DKK"/>
+			<xsd:enumeration value="DOP"/>
+			<xsd:enumeration value="DZD"/>
+			<xsd:enumeration value="EGP"/>
+			<xsd:enumeration value="ERN"/>
+			<xsd:enumeration value="ETB"/>
+			<xsd:enumeration value="EUR"/>
+			<xsd:enumeration value="FJD"/>
+			<xsd:enumeration value="FKP"/>
+			<xsd:enumeration value="GBP"/>
+			<xsd:enumeration value="GEL"/>
+			<xsd:enumeration value="GGP"/>
+			<xsd:enumeration value="GHS"/>
+			<xsd:enumeration value="GIP"/>
+			<xsd:enumeration value="GMD"/>
+			<xsd:enumeration value="GNF"/>
+			<xsd:enumeration value="GTQ"/>
+			<xsd:enumeration value="GYD"/>
+			<xsd:enumeration value="HKD"/>
+			<xsd:enumeration value="HNL"/>
+			<xsd:enumeration value="HRK"/>
+			<xsd:enumeration value="HTG"/>
+			<xsd:enumeration value="HUF"/>
+			<xsd:enumeration value="IDR"/>
+			<xsd:enumeration value="ILS"/>
+			<xsd:enumeration value="IMP"/>
+			<xsd:enumeration value="INR"/>
+			<xsd:enumeration value="IQD"/>
+			<xsd:enumeration value="IRR"/>
+			<xsd:enumeration value="ISK"/>
+			<xsd:enumeration value="JEP"/>
+			<xsd:enumeration value="JMD"/>
+			<xsd:enumeration value="JOD"/>
+			<xsd:enumeration value="JPY"/>
+			<xsd:enumeration value="KES"/>
+			<xsd:enumeration value="KGS"/>
+			<xsd:enumeration value="KHR"/>
+			<xsd:enumeration value="KMF"/>
+			<xsd:enumeration value="KPW"/>
+			<xsd:enumeration value="KRW"/>
+			<xsd:enumeration value="KWD"/>
+			<xsd:enumeration value="KYD"/>
+			<xsd:enumeration value="KZT"/>
+			<xsd:enumeration value="LAK"/>
+			<xsd:enumeration value="LBP"/>
+			<xsd:enumeration value="LKR"/>
+			<xsd:enumeration value="LRD"/>
+			<xsd:enumeration value="LSL"/>
+			<xsd:enumeration value="LYD"/>
+			<xsd:enumeration value="MAD"/>
+			<xsd:enumeration value="MDL"/>
+			<xsd:enumeration value="MGA"/>
+			<xsd:enumeration value="MKD"/>
+			<xsd:enumeration value="MMK"/>
+			<xsd:enumeration value="MNT"/>
+			<xsd:enumeration value="MOP"/>
+			<xsd:enumeration value="MRO"/>
+			<xsd:enumeration value="MRU"/>
+			<xsd:enumeration value="MUR"/>
+			<xsd:enumeration value="MVR"/>
+			<xsd:enumeration value="MWK"/>
+			<xsd:enumeration value="MXN"/>
+			<xsd:enumeration value="MYR"/>
+			<xsd:enumeration value="MZN"/>
+			<xsd:enumeration value="NAD"/>
+			<xsd:enumeration value="NGN"/>
+			<xsd:enumeration value="NIO"/>
+			<xsd:enumeration value="NOK"/>
+			<xsd:enumeration value="NPR"/>
+			<xsd:enumeration value="NZD"/>
+			<xsd:enumeration value="OMR"/>
+			<xsd:enumeration value="PAB"/>
+			<xsd:enumeration value="PEN"/>
+			<xsd:enumeration value="PGK"/>
+			<xsd:enumeration value="PHP"/>
+			<xsd:enumeration value="PKR"/>
+			<xsd:enumeration value="PLN"/>
+			<xsd:enumeration value="PYG"/>
+			<xsd:enumeration value="QAR"/>
+			<xsd:enumeration value="RON"/>
+			<xsd:enumeration value="RSD"/>
+			<xsd:enumeration value="RUB"/>
+			<xsd:enumeration value="RWF"/>
+			<xsd:enumeration value="SAR"/>
+			<xsd:enumeration value="SBD"/>
+			<xsd:enumeration value="SCR"/>
+			<xsd:enumeration value="SDG"/>
+			<xsd:enumeration value="SEK"/>
+			<xsd:enumeration value="SGD"/>
+			<xsd:enumeration value="SHP"/>
+			<xsd:enumeration value="SLL"/>
+			<xsd:enumeration value="SOS"/>
+			<xsd:enumeration value="SPL"/>
+			<xsd:enumeration value="SRD"/>
+			<xsd:enumeration value="SSP"/>
+			<xsd:enumeration value="STD"/>
+			<xsd:enumeration value="STN"/>
+			<xsd:enumeration value="SVC"/>
+			<xsd:enumeration value="SYP"/>
+			<xsd:enumeration value="SZL"/>
+			<xsd:enumeration value="THB"/>
+			<xsd:enumeration value="TJS"/>
+			<xsd:enumeration value="TMM"/>
+			<xsd:enumeration value="TND"/>
+			<xsd:enumeration value="TOP"/>
+			<xsd:enumeration value="TRY"/>
+			<xsd:enumeration value="TTD"/>
+			<xsd:enumeration value="TVD"/>
+			<xsd:enumeration value="TWD"/>
+			<xsd:enumeration value="TZS"/>
+			<xsd:enumeration value="UAH"/>
+			<xsd:enumeration value="UGX"/>
+			<xsd:enumeration value="USD"/>
+			<xsd:enumeration value="UYU"/>
+			<xsd:enumeration value="UZS"/>
+			<xsd:enumeration value="VEB"/>
+			<xsd:enumeration value="VEF"/>
+			<xsd:enumeration value="VES"/>
+			<xsd:enumeration value="VND"/>
+			<xsd:enumeration value="VUV"/>
+			<xsd:enumeration value="WST"/>
+			<xsd:enumeration value="XAF"/>
+			<xsd:enumeration value="XAG"/>
+			<xsd:enumeration value="XAU"/>
+			<xsd:enumeration value="XCD"/>
+			<xsd:enumeration value="XDR"/>
+			<xsd:enumeration value="XOF"/>
+			<xsd:enumeration value="XPD"/>
+			<xsd:enumeration value="XPF"/>
+			<xsd:enumeration value="XPT"/>
+			<xsd:enumeration value="YER"/>
+			<xsd:enumeration value="ZAR"/>
+			<xsd:enumeration value="ZMW"/>
+			<xsd:enumeration value="ZWD"/>
+			<!-- United Arab Emirates, Dirhams -->
+			<!-- Afghanistan, Afghanis -->
+			<!-- Albania, Leke -->
+			<!-- Armenia, Drams -->
+			<!-- Angola, Kwanza -->
+			<!-- Argentina, Pesos -->
+			<!-- Australia, Dollars -->
+			<!-- Aruba, Guilders (also called Florins) -->
+			<!-- Azerbaijan, New Manats -->
+			<!-- Bosnia and Herzegovina, Convertible Marka -->
+			<!-- Barbados, Dollars -->
+			<!-- Bangladesh, Taka -->
+			<!-- Bulgaria, Leva -->
+			<!-- Bahrain, Dinars -->
+			<!-- Burundi, Francs -->
+			<!-- Bermuda, Dollars -->
+			<!-- Brunei Darussalam, Dollars -->
+			<!-- Bolivia, Bolivianos -->
+			<!-- Brazil, Brazil Real -->
+			<!-- Bahamas, Dollars -->
+			<!-- Bhutan, Ngultrum -->
+			<!-- Botswana, Pulas -->
+			<!-- Belarus, Rubles -->
+			<!-- Belize, Dollars -->
+			<!-- Canada, Dollars -->
+			<!-- Congo/Kinshasa, Congolese Francs -->
+			<!-- Switzerland, Francs -->
+			<!-- Chile, Pesos -->
+			<!-- China, Yuan Renminbi -->
+			<!-- Colombia, Pesos -->
+			<!-- Costa Rica, Colones -->
+			<!-- Cuba, Pesos -->
+			<!-- Cape Verde, Escudos -->
+			<!-- Czech Republic, Koruny -->
+			<!-- Djibouti, Francs -->
+			<!-- Denmark, Kroner -->
+			<!-- Dominican Republic, Pesos -->
+			<!-- Algeria, Algeria Dinars -->
+			<!-- Egypt, Pounds -->
+			<!-- Eritrea, Nakfa -->
+			<!-- Ethiopia, Birr -->
+			<!-- Euro Member Countries, Euro -->
+			<!-- Fiji, Dollars -->
+			<!-- Falkland Islands (Malvinas), Pounds -->
+			<!-- United Kingdom, Pounds -->
+			<!-- Georgia, Lari -->
+			<!-- Guernsey, Pounds -->
+			<!-- Ghana, Cedis -->
+			<!-- Gibraltar, Pounds -->
+			<!-- Gambia, Dalasi -->
+			<!-- Guinea, Francs -->
+			<!-- Guatemala, Quetzales -->
+			<!-- Guyana, Dollars -->
+			<!-- Hong Kong, Dollars -->
+			<!-- Honduras, Lempiras -->
+			<!-- Croatia, Kuna -->
+			<!-- Haiti, Gourdes -->
+			<!-- Hungary, Forint -->
+			<!-- Indonesia, Rupiahs -->
+			<!-- Israel, New Shekels -->
+			<!-- Isle of Man, Pounds -->
+			<!-- India, Rupees -->
+			<!-- Iraq, Dinars -->
+			<!-- Iran, Rials -->
+			<!-- Iceland, Kronur -->
+			<!-- Jersey, Pounds -->
+			<!-- Jamaica, Dollars -->
+			<!-- Jordan, Dinars -->
+			<!-- Japan, Yen -->
+			<!-- Kenya, Shillings -->
+			<!-- Kyrgyzstan, Soms -->
+			<!-- Cambodia, Riels -->
+			<!-- Comoros, Francs -->
+			<!-- Korea (North), Won -->
+			<!-- Korea (South), Won -->
+			<!-- Kuwait, Dinars -->
+			<!-- Cayman Islands, Dollars -->
+			<!-- Kazakhstan, Tenge -->
+			<!-- Laos, Kips -->
+			<!-- Lebanon, Pounds -->
+			<!-- Sri Lanka, Rupees -->
+			<!-- Liberia, Dollars -->
+			<!-- Lesotho, Maloti -->
+			<!-- Libya, Dinars -->
+			<!-- Morocco, Dirhams -->
+			<!-- Moldova, Lei -->
+			<!-- Madagascar, Ariary -->
+			<!-- Macedonia, Denars -->
+			<!-- Myanmar (Burma), Kyats -->
+			<!-- Mongolia, Tugriks -->
+			<!-- Macau, Patacas -->
+			<!-- Mauritania, Ouguiyas -->
+			<!-- Malta, Liri (expires 2008-Jan-31) -->
+			<!-- Mauritius, Rupees -->
+			<!-- Maldives (Maldive Islands), Rufiyaa -->
+			<!-- Malawi, Kwachas -->
+			<!-- Mexico, Pesos -->
+			<!-- Malaysia, Ringgits -->
+			<!-- Mozambique, Meticais -->
+			<!-- Namibia, Dollars -->
+			<!-- Nigeria, Nairas -->
+			<!-- Nicaragua, Cordobas -->
+			<!-- Norway, Krone -->
+			<!-- Nepal, Nepal Rupees -->
+			<!-- New Zealand, Dollars -->
+			<!-- Oman, Rials -->
+			<!-- Panama, Balboa -->
+			<!-- Peru, Nuevos Soles -->
+			<!-- Papua New Guinea, Kina -->
+			<!-- Philippines, Pesos -->
+			<!-- Pakistan, Rupees -->
+			<!-- Poland, Zlotych -->
+			<!-- Paraguay, Guarani -->
+			<!-- Qatar, Rials -->
+			<!-- Romania, New Lei -->
+			<!-- Serbia, Dinars -->
+			<!-- Russia, Rubles -->
+			<!-- Rwanda, Rwanda Francs -->
+			<!-- Saudi Arabia, Riyals -->
+			<!-- Solomon Islands, Dollars -->
+			<!-- Seychelles, Rupees -->
+			<!-- Sudan, Pounds -->
+			<!-- Sweden, Kronor -->
+			<!-- Singapore, Dollars -->
+			<!-- Saint Helena, Pounds -->
+			<!-- Slovakia, Koruny -->
+			<!-- Sierra Leone, Leones -->
+			<!-- Somalia, Shillings -->
+			<!-- Seborga, Luigini -->
+			<!-- Suriname, Dollars -->
+			<!-- So Tome and Principe, Dobras -->
+			<!-- El Salvador, Colones -->
+			<!-- Syria, Pounds -->
+			<!-- Swaziland, Emalangeni -->
+			<!-- Thailand, Baht -->
+			<!-- Tajikistan, Somoni -->
+			<!-- Turkmenistan, Manats -->
+			<!-- Tunisia, Dinars -->
+			<!-- Tonga, Pa'anga -->
+			<!-- Turkey, New Lira -->
+			<!-- Trinidad and Tobago, Dollars -->
+			<!-- Tuvalu, Tuvalu Dollars -->
+			<!-- Taiwan, New Dollars -->
+			<!-- Tanzania, Shillings -->
+			<!-- Ukraine, Hryvnia -->
+			<!-- Uganda, Shillings -->
+			<!-- United States of America, Dollars -->
+			<!-- Uruguay, Pesos -->
+			<!-- Uzbekistan, Sums -->
+			<!-- Venezuela, Bolivares (expires 2008-Jun-30) -->
+			<!-- Venezuela, Bolivares Fuertes -->
+			<!-- Viet Nam, Dong -->
+			<!-- Vanuatu, Vatu -->
+			<!-- Samoa, Tala -->
+			<!-- Communaut Financire Africaine BEAC, Francs -->
+			<!-- Silver, Ounces -->
+			<!-- Gold, Ounces -->
+			<!-- East Caribbean Dollars -->
+			<!-- International Monetary Fund (IMF) Special Drawing Rights -->
+			<!-- Communaut Financire Africaine BCEAO, Francs -->
+			<!-- Palladium Ounces -->
+			<!-- Comptoirs Franais du Pacifique Francs -->
+			<!-- Platinum, Ounces -->
+			<!-- Yemen, Rials -->
+			<!-- South Africa, Rand -->
+			<!-- Zambia, Kwacha -->
+			<!-- Zimbabwe, Zimbabwe Dollars -->
+			<!-- Updated -->
+			<!-- Bolivar Soberano VES -->
+			<!-- Convertible Peso CUC -->
+			<!-- São Tomé and Príncipe Dobra STN -->
+			<!-- Mauritania Ouguiya MRU -->
+			<!-- South Sudan Pound SSP -->
+			<!-- WIR Euro CHE -->
+			<!-- WIR Franc CHW -->
+		</xsd:restriction>
+	</xsd:simpleType>
+</xsd:schema>

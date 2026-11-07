@@ -1,0 +1,1 @@
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" version="1.0"> <xsd:include schemaLocation="iso3currency_current.xsd"/> <xsd:include schemaLocation="iso3currency_legacy.xsd"/> <xsd:simpleType name="iso3currency"> <xsd:union memberTypes="current_iso3currency legacy_iso3currency" /> </xsd:simpleType> </xsd:schema>

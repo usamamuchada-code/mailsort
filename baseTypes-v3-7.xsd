@@ -1,0 +1,2607 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- edited with XMLSpy v2009 sp1 (http://www.altova.com) by Suzanne Wadden (Companies House) -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns="http://xmlgw.companieshouse.gov.uk" targetNamespace="http://xmlgw.companieshouse.gov.uk" elementFormDefault="qualified" attributeFormDefault="unqualified" version="3.0" id="baseTypes">
+	<xs:include schemaLocation="iso3currency_all.xsd"/>
+	<xs:include schemaLocation="iso3currency_current.xsd"/>
+	<xs:simpleType name="nonEmptyString">
+		<xs:restriction base="xs:string">
+			<xs:whiteSpace value="collapse"/>
+			<xs:minLength value="1"/>
+			<xs:pattern value="\S+.*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="companyNameString">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="[-,.:; 0-9A-Z&#x26;@$&#xA3;&#xA5;&#x20AC;&#x27;&#x22;&#xAB;&#xBB;&#x2018;&#x2019;&#x201C;&#x201D;?!/\\()\[\]{}&#x3C;&#x3E;&#xC0;&#xC1;&#xC2;&#xC3;&#xC4;&#xC5;&#x100;&#x102;&#x104;&#xC6;&#x1FC;&#xC7;&#x106;&#x108;&#x10A;&#x10C;&#xDE;&#x10E;&#xD0;&#xC8;&#xC9;&#xCA;&#xCB;&#x112;&#x114;&#x116;&#x118;&#x11A;&#x11C;&#x11E;&#x120;&#x122;&#x124;&#x126;&#xCC;&#xCD;&#xCE;&#xCF;&#x128;&#x12A;&#x12C;&#x12E;&#x130;&#x134;&#x136;&#x139;&#x13B;&#x13D;&#x13F;&#x141;&#xD1;&#x143;&#x145;&#x147;&#x14A;&#xD2;&#xD3;&#xD4;&#xD5;&#xD6;&#xD8;&#x14C;&#x14E;&#x150;&#x1FE;&#x152;&#x154;&#x156;&#x158;&#x15A;&#x15C;&#x15E;&#x160;&#x162;&#x164;&#x166;&#xD9;&#xDA;&#xDB;&#xDC;&#x168;&#x16A;&#x16C;&#x16E;&#x170;&#x172;&#x174;&#x1E80;&#x1E82;&#x1E84;&#x1EF2;&#xDD;&#x176;&#x178;&#x179;&#x17B;&#x17D;]{3}[-,.:; 0-9A-Z&#x26;@$&#xA3;&#xA5;&#x20AC;&#x27;&#x22;&#xAB;&#xBB;&#x2018;&#x2019;&#x201C;&#x201D;?!/\\()\[\]{}&#x3C;&#x3E;*=#%+&#xC0;&#xC1;&#xC2;&#xC3;&#xC4;&#xC5;&#x100;&#x102;&#x104;&#xC6;&#x1FC;&#xC7;&#x106;&#x108;&#x10A;&#x10C;&#xDE;&#x10E;&#xD0;&#xC8;&#xC9;&#xCA;&#xCB;&#x112;&#x114;&#x116;&#x118;&#x11A;&#x11C;&#x11E;&#x120;&#x122;&#x124;&#x126;&#xCC;&#xCD;&#xCE;&#xCF;&#x128;&#x12A;&#x12C;&#x12E;&#x130;&#x134;&#x136;&#x139;&#x13B;&#x13D;&#x13F;&#x141;&#xD1;&#x143;&#x145;&#x147;&#x14A;&#xD2;&#xD3;&#xD4;&#xD5;&#xD6;&#xD8;&#x14C;&#x14E;&#x150;&#x1FE;&#x152;&#x154;&#x156;&#x158;&#x15A;&#x15C;&#x15E;&#x160;&#x162;&#x164;&#x166;&#xD9;&#xDA;&#xDB;&#xDC;&#x168;&#x16A;&#x16C;&#x16E;&#x170;&#x172;&#x174;&#x1E80;&#x1E82;&#x1E84;&#x1EF2;&#xDD;&#x176;&#x178;&#x179;&#x17B;&#x17D;]{0,157}"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="nonEmptyCompanyNameString">
+		<xs:restriction base="companyNameString">
+			<xs:minLength value="1"/>
+			<xs:pattern value="\S+.*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="nameAddressString">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="[-,.:; 0-9A-Z&#x26;@$&#xA3;&#xA5;&#x20AC;&#x27;&#x22;&#xAB;&#xBB;&#x2018;&#x2019;&#x201C;&#x201D;?!/\\()\[\]{}&#x3C;&#x3E;*=#%+&#xC0;&#xC1;&#xC2;&#xC3;&#xC4;&#xC5;&#x100;&#x102;&#x104;&#xC6;&#x1FC;&#xC7;&#x106;&#x108;&#x10A;&#x10C;&#xDE;&#x10E;&#xD0;&#xC8;&#xC9;&#xCA;&#xCB;&#x112;&#x114;&#x116;&#x118;&#x11A;&#x11C;&#x11E;&#x120;&#x122;&#x124;&#x126;&#xCC;&#xCD;&#xCE;&#xCF;&#x128;&#x12A;&#x12C;&#x12E;&#x130;&#x134;&#x136;&#x139;&#x13B;&#x13D;&#x13F;&#x141;&#xD1;&#x143;&#x145;&#x147;&#x14A;&#xD2;&#xD3;&#xD4;&#xD5;&#xD6;&#xD8;&#x14C;&#x14E;&#x150;&#x1FE;&#x152;&#x154;&#x156;&#x158;&#x15A;&#x15C;&#x15E;&#x160;&#x162;&#x164;&#x166;&#xD9;&#xDA;&#xDB;&#xDC;&#x168;&#x16A;&#x16C;&#x16E;&#x170;&#x172;&#x174;&#x1E80;&#x1E82;&#x1E84;&#x1EF2;&#xDD;&#x176;&#x178;&#x179;&#x17B;&#x17D;a-z&#xC0;&#xD6;&#xD8;&#x17F;&#x192;&#x1FA;&#x1FF;&#x1E80;&#x1E85;&#x1EF2;&#x1EF3;]*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="nonEmptyNameAddressString">
+		<xs:restriction base="nameAddressString">
+			<xs:minLength value="1"/>
+			<xs:pattern value="\S+.*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="otherDataString">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="[-,.:; 0-9A-Z&#x26;@$&#xA3;&#xA5;&#x20AC;&#x27;&#x22;&#xAB;&#xBB;&#x2018;&#x2019;&#x201C;&#x201D;?!/\\()\[\]{}&#x3C;&#x3E;*=#%+&#xC0;&#xC1;&#xC2;&#xC3;&#xC4;&#xC5;&#x100;&#x102;&#x104;&#xC6;&#x1FC;&#xC7;&#x106;&#x108;&#x10A;&#x10C;&#xDE;&#x10E;&#xD0;&#xC8;&#xC9;&#xCA;&#xCB;&#x112;&#x114;&#x116;&#x118;&#x11A;&#x11C;&#x11E;&#x120;&#x122;&#x124;&#x126;&#xCC;&#xCD;&#xCE;&#xCF;&#x128;&#x12A;&#x12C;&#x12E;&#x130;&#x134;&#x136;&#x139;&#x13B;&#x13D;&#x13F;&#x141;&#xD1;&#x143;&#x145;&#x147;&#x14A;&#xD2;&#xD3;&#xD4;&#xD5;&#xD6;&#xD8;&#x14C;&#x14E;&#x150;&#x1FE;&#x152;&#x154;&#x156;&#x158;&#x15A;&#x15C;&#x15E;&#x160;&#x162;&#x164;&#x166;&#xD9;&#xDA;&#xDB;&#xDC;&#x168;&#x16A;&#x16C;&#x16E;&#x170;&#x172;&#x174;&#x1E80;&#x1E82;&#x1E84;&#x1EF2;&#xDD;&#x176;&#x178;&#x179;&#x17B;&#x17D;a-z&#xC0;&#xD6;&#xD8;&#x17F;&#x192;&#x1FA;&#x1FF;&#x1E80;&#x1E85;&#x1EF2;&#x1EF3;]*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="nonEmptyOtherDataString">
+		<xs:restriction base="otherDataString">
+			<xs:minLength value="1"/>
+			<xs:pattern value="\S+.*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="positiveDecimal">
+		<xs:restriction base="xs:decimal">
+			<xs:minInclusive value="0"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CompanyNumberString">
+		<xs:annotation>
+			<xs:documentation>The company registration number</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:string">
+			<xs:minLength value="8"/>
+			<xs:maxLength value="8"/>
+			<xs:whiteSpace value="collapse"/>
+			<xs:pattern value="[A-Z0-9]{8,8}"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:element name="CompanyName">
+		<xs:annotation>
+			<xs:documentation>The Registered Company Name</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="160"/>
+				<xs:whiteSpace value="preserve"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CompanyNumber" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>The company registration number</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="PartialCompanyNumber">
+		<xs:annotation>
+			<xs:documentation>Company Number used for number searching</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="8"/>
+				<xs:whiteSpace value="collapse"/>
+				<xs:pattern value="[A-Z0-9]{1,8}[*]{0,1}"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="MortgageInd">
+		<xs:annotation>
+			<xs:documentation>Gives Mortgage Register Indication</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="2"/>
+				<xs:maxLength value="5"/>
+				<xs:whiteSpace value="collapse"/>
+				<xs:enumeration value="NO">
+					<xs:annotation>
+						<xs:documentation>No charges registered</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="LT300">
+					<xs:annotation>
+						<xs:documentation>Less than 300 charges registered</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="GE300">
+					<xs:annotation>
+						<xs:documentation>300 or more charges registered</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AddressLine">
+		<xs:annotation>
+			<xs:documentation>A Single Address Line</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:minLength value="0"/>
+				<xs:maxLength value="32"/>
+				<xs:whiteSpace value="preserve"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="RegAddress" type="RegAddressType">
+		<xs:annotation>
+			<xs:documentation>Company Registered Address</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:complexType name="RegAddressType">
+		<xs:annotation>
+			<xs:documentation>Registered address with up to 4 address lines</xs:documentation>
+		</xs:annotation>
+		<xs:sequence maxOccurs="4">
+			<xs:element ref="AddressLine"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="SICText">
+		<xs:annotation>
+			<xs:documentation>Single SIC code Text String</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyOtherDataString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="120"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="SICCode">
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="4"/>
+				<xs:maxLength value="5"/>
+				<xs:pattern value="[0-9]*"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="SICCodes" type="SICCodesType">
+		<xs:annotation>
+			<xs:documentation>Set of Standard Industrial Classification Codes</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:complexType name="SICCodesType">
+		<xs:annotation>
+			<xs:documentation>Sic Codes or text</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element ref="SICCode" maxOccurs="4"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="CompanyStatus">
+		<xs:annotation>
+			<xs:documentation>The status of the company</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="otherDataString">
+				<xs:minLength value="1"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="DissolutionDate">
+		<xs:annotation>
+			<xs:documentation>Date of Dissolution of Company</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="ClosureDate">
+		<xs:annotation>
+			<xs:documentation>Date of Closure of Company</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="IncorporationDate">
+		<xs:annotation>
+			<xs:documentation>Date of Incorporation of Company</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="RegistrationDate">
+		<xs:annotation>
+			<xs:documentation>Date of Registration of Company/charge/person</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CONDate">
+		<xs:annotation>
+			<xs:documentation>Date of last Change of Name</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="PreviousNames" type="CoPreviousNamesType">
+		<xs:annotation>
+			<xs:documentation>Set of Previous Names for Company</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:complexType name="CoPreviousNamesType">
+		<xs:annotation>
+			<xs:documentation>Set of previous names and dates changed</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element ref="CONDate"/>
+			<xs:element ref="CompanyName"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="NextDueDate">
+		<xs:annotation>
+			<xs:documentation>The Next Expected Confirmation Statement</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Overdue">
+		<xs:annotation>
+			<xs:documentation>Overdue Indication</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="NO">
+					<xs:annotation>
+						<xs:documentation>Document not overdue</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="OVERDUE">
+					<xs:annotation>
+						<xs:documentation>Document is overdue</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="PENDING">
+					<xs:annotation>
+						<xs:documentation>Document is pending</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AccountCategory" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Type of Accounts</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="AccountRefDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Accounting Reference Date (DD-MM significant)</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="LastMadeUpDate">
+		<xs:annotation>
+			<xs:documentation>Last Made Up Date</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="DocumentAvailable" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates that the document is available for access</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="LastFullMemDate">
+		<xs:annotation>
+			<xs:documentation>Date on which a company last supplied a Full Members List</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="LastBulkShareDate">
+		<xs:annotation>
+			<xs:documentation>Date last Bulk Shareholders List was supplied</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:date">
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CountryOfOrigin">
+		<xs:annotation>
+			<xs:documentation>Country of Origin</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="otherDataString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="20"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="NumGenPartners" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number of General Partners (LP)</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="NumLimPartners" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number of Limited Partners (LP)</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="Weeded" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Whether fiche has been weeded</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="HasUKEstablishment" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Whether UK establishment Information is available</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="WeededDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Fiche Weeded Date</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="NumMortCharges" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number of charges recorded against company</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="NumMortOutstanding" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number of outstanding Mortgage Charges</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="NumMortSatisfied" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number Satisfied Mort Charges</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="NumMortPartSatisfied" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number Part Satisfied Mort Charges</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="HasAppointments" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates Appointment Information is available</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="InLiquidation" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates Company in Liquidation</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="GiveMortTotals" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Requests the return of mortgage totals</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DataSet">
+		<xs:annotation>
+			<xs:documentation>The dataset to which a company belongs (live,dissolved etc)</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="LIVE">
+					<xs:annotation>
+						<xs:documentation>Index of Live and Recently Dissolved Companies</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="DISSOLVED">
+					<xs:annotation>
+						<xs:documentation>Index of Dissolved companies</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="FORMER">
+					<xs:annotation>
+						<xs:documentation>Index of Previous or Former company names</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="PROPOSED">
+					<xs:annotation>
+						<xs:documentation>Index of Proposed company names</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CompanyDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date associated with company</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="CompanyIndexStatus">
+		<xs:annotation>
+			<xs:documentation>Gives the status of the company as reflected on the index</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="0"/>
+				<xs:enumeration value="EFFECTIVE">
+					<xs:annotation>
+						<xs:documentation>Proposed Company Name is Effective</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="REJECTED">
+					<xs:annotation>
+						<xs:documentation>Proposed Comapny Name has been Rejected</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="DISSOLVED">
+					<xs:annotation>
+						<xs:documentation>Company has been Dissolved</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="CNGOFNAME">
+					<xs:annotation>
+						<xs:documentation>This is a company Change of Name</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="INLIQ">
+					<xs:annotation>
+						<xs:documentation>Company is in Liquidation</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="REMOVED">
+					<xs:annotation>
+						<xs:documentation>Company has been removed</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="STATUSR"/>
+				<xs:enumeration value="STATUSA"/>
+				<xs:enumeration value="STATUSV"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="SearchMatch">
+		<xs:annotation>
+			<xs:documentation>Gives the search match status of a company</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="NEAR">
+					<xs:annotation>
+						<xs:documentation>This Company Name is the nearest search match as an exact match could not be found</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="EXACT">
+					<xs:annotation>
+						<xs:documentation>This company Name is an exact match for the given seach</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="SearchRows" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Numer of rows to return/returned  in a search response</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ContinuationKey" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>The continuation key allowing further data sets to be retrieved</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="RegressionKey" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>The key allowing previous data sets to be returned</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DocumentCategory">
+		<xs:annotation>
+			<xs:documentation>Document Category Code</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:integer">
+				<xs:minInclusive value="0"/>
+				<xs:maxInclusive value="9"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="FormType" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Document Form Type</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DocumentType" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Document Type, appliction specific</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DocumentDesc" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Description of Document</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DocumentDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date of document</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DocBeingScanned" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates that the document is not yet available for download</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ImageKey" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>Unique key of this document on the Image System - returned from a filing history</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="CapitalDocInd" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates whether capital documents are required in result</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="UserReference">
+		<xs:annotation>
+			<xs:documentation>User supplied reference</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="otherDataString">
+				<xs:minLength value="0"/>
+				<xs:maxLength value="24"/>
+				<xs:whiteSpace value="preserve"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AppointmentStatus">
+		<xs:annotation>
+			<xs:documentation>Type of appintment (current/resigned)</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="CURRENT">
+					<xs:annotation>
+						<xs:documentation>The appointment is Current</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="RESIGNED">
+					<xs:annotation>
+						<xs:documentation>This is a resigned appointment</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AppointmentType">
+		<xs:annotation>
+			<xs:documentation>Class of appointment. (dir, sec etc).</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="DIR">
+					<xs:annotation>
+						<xs:documentation>This appointment is for a Director</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="SEC">
+					<xs:annotation>
+						<xs:documentation>This appointment is for a Secretary</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="NOMDIR">
+					<xs:annotation>
+						<xs:documentation>This appointment is for a Nominated Director</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="NOMSEC">
+					<xs:annotation>
+						<xs:documentation>This appointment is for a Nominated Secretary</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="DIRSEC">
+					<xs:annotation>
+						<xs:documentation>This appointment is both a Director and a Secretary</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="DESMEM">
+					<xs:annotation>
+						<xs:documentation>This appointment is a Designated Member</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="MEMBER">
+					<xs:annotation>
+						<xs:documentation>This appointment is a Member</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="NumCurrentAppt">
+		<xs:annotation>
+			<xs:documentation>The number of current appointments for company/person</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:integer">
+				<xs:minInclusive value="0"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="NumResignedAppt">
+		<xs:annotation>
+			<xs:documentation>The number of resigned appointments for company/person</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:integer">
+				<xs:minInclusive value="0"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="NumDissolvedAppt">
+		<xs:annotation>
+			<xs:documentation>The number of dissolved appointments</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:integer">
+				<xs:minInclusive value="0"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="NumAppointments">
+		<xs:annotation>
+			<xs:documentation>Total number of personal appointments</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:integer">
+				<xs:minInclusive value="0"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Surname">
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="160"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Forename">
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="OtherForenames">
+		<xs:annotation>
+			<xs:documentation>More than one name can be entered, separated by spaces</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Title">
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="50"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="PostTown">
+		<xs:annotation>
+			<xs:documentation>Address post town</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="PoBox">
+		<xs:annotation>
+			<xs:documentation>PO Box</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="10"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="County">
+		<xs:annotation>
+			<xs:documentation>Address County</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="50"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Country">
+		<xs:annotation>
+			<xs:documentation>Address Country</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="50"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Postcode">
+		<xs:annotation>
+			<xs:documentation>Address Postcode</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="15"/>
+				<xs:minLength value="0"/>
+				<!-- minLength must be 0 as apparently <Postcode></Postcode> is a common way to submit no postcode. -->
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="PostCode">
+		<xs:annotation>
+			<xs:documentation>Deprecated. Address Postcode</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString"/>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Nationality">
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="PersonID" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>Unique identifier for Person (Private Database key. May be used in subsequent data requests)</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DOB" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date of Birth</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="AppointmentDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date of appointment</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ResignationDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date of resignation</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ApptDatePrefix">
+		<xs:annotation>
+			<xs:documentation>Appointment Date Prefix.  Used if the original data capture by Companies House took place during 1991/1992, taking the appointment date from the latest Annual Return.</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="PRE"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="ServiceAddressInd" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates that this is a service address</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="CoSearchItem" type="CoSearchCPLXType">
+		<xs:annotation>
+			<xs:documentation>Single company search result row</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:complexType name="CoSearchCPLXType">
+		<xs:annotation>
+			<xs:documentation>Company Search result Cplx type</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element ref="CompanyName"/>
+			<xs:element ref="CompanyNumber"/>
+			<xs:element ref="DataSet"/>
+			<xs:element ref="CompanyIndexStatus" minOccurs="0"/>
+			<xs:element ref="CompanyDate" minOccurs="0"/>
+			<xs:element ref="SearchMatch" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="StartDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Range Start Date</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="EndDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Range End Date</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="SatisfiedChargesInd" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates whether satisfied charges are required</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ChargeNumber" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Unique Charge Identified (Private Database reference - used in susequent requests)</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ChargeCode">
+		<xs:annotation>
+			<xs:documentation>Charge Unique Reference Code (Public Charge reference - post CRP)</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="12"/>
+				<xs:maxLength value="16"/>
+				<xs:pattern value="[0-9A-Z]{2}[0-9]*"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="ChargeDescription">
+		<xs:annotation>
+			<xs:documentation>A brief description of any land (including buildings), ship, aircraft or intellectual property registered in the UK which is subject to this (or under this) fixed charge or fixed security</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyOtherDataString">
+				<xs:maxLength value="3500"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Description" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Description</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="CreationDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Creation Date</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="AcquisitionDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Acquisition Date</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="PropertyAcquiredDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date that the property was acquired</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="AlterationToChgInd" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Alteration to charge indicator</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="AdditionalPersonsEntitled">
+		<xs:annotation>
+			<xs:documentation>Additional persons entitled indicator</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="true"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="PersonsEntitled" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>Persons entitled to the charge</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="PersonEntChgName" type="nameAddressString">
+		<xs:annotation>
+			<xs:documentation>Person entitled to charge Name</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="SatisfiedDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Satisfication Date</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ExistingChargeKey">
+		<xs:annotation>
+			<xs:documentation>Charge specific identification key returned by read to be used in submission</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ChargeSatisfied">
+		<xs:annotation>
+			<xs:documentation>Charge Satisfied Indicator</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="OUTSTANDING"/>
+				<xs:enumeration value="SATISFIED"/>
+				<xs:enumeration value="PARTSATISFIED"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="DetailsOnFicheInd" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Additional details available on Fiche indicator</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ReceiverAptdInd" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Receiver Appointed Indicator</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="InstrumentDescription" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Description of Instrument</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="ShortParticulars" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Short particulars of charge</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="IncludeResignedInd" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates whether resigned appointments should be returned</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="MadeUpDate" type="xs:date">
+		<xs:annotation>
+			<xs:documentation>Date information made up to</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="Media">
+		<xs:annotation>
+			<xs:documentation>Image storage media</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="ARCHIVE"/>
+				<xs:enumeration value="JUKEBOX"/>
+				<xs:enumeration value="CACHE"/>
+				<xs:enumeration value="UNAVAILABLE"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="OfficerType">
+		<xs:annotation>
+			<xs:documentation>The officer type</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="CUR"/>
+				<xs:enumeration value="LLP"/>
+				<xs:enumeration value="DIS"/>
+				<xs:enumeration value="EUR"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="NumPages" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number of pages in document</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="NumDisqualOrders" type="xs:integer">
+		<xs:annotation>
+			<xs:documentation>Number of disqualified orders</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DocRequestKey" type="xs:string">
+		<xs:annotation>
+			<xs:documentation>A Unique key referencing document</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="DocumentName" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>The name of the document as delivered to the image repository server</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="NumAppInd">
+		<xs:annotation>
+			<xs:documentation>Indicates that the number of appointments is greater than the returned value</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="GE1000"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="OfficerSearchItem">
+		<xs:complexType>
+			<xs:annotation>
+				<xs:documentation>Details of an officer search result</xs:documentation>
+			</xs:annotation>
+			<xs:sequence>
+				<xs:element ref="Title"/>
+				<xs:element ref="Surname"/>
+				<xs:element ref="DOB"/>
+				<xs:element ref="PostTown"/>
+				<xs:element ref="PostCode"/>
+				<xs:element ref="Postcode"/>
+				<xs:element ref="PersonID"/>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:complexType name="PersonType">
+		<xs:sequence>
+			<xs:element ref="Title" minOccurs="0"/>
+			<xs:element ref="Surname"/>
+			<xs:element ref="Forename" minOccurs="0"/>
+			<xs:element ref="OtherForenames" minOccurs="0"/>
+			<xs:element ref="DOB" minOccurs="0"/>
+			<xs:element ref="Nationality" minOccurs="0"/>
+			<xs:element ref="PersonID" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PersonBaseType">
+		<xs:sequence>
+			<xs:element ref="Title" minOccurs="0"/>
+			<xs:element ref="Forename" minOccurs="0"/>
+			<xs:element ref="OtherForenames" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>More than one name can be entered separated by spaces</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element ref="Surname"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PersonReturnType">
+		<xs:sequence>
+			<xs:element ref="Title" minOccurs="0"/>
+			<xs:element ref="Forename" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element ref="Surname"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="NameType">
+		<xs:sequence minOccurs="0">
+			<xs:element ref="Forename"/>
+			<xs:element ref="Surname"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PreviousNameType">
+		<xs:sequence>
+			<xs:element ref="Forename" minOccurs="0"/>
+			<xs:element name="Surname">
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyString">
+						<xs:maxLength value="50"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PersonNameType">
+		<xs:sequence>
+			<xs:element ref="Forename" minOccurs="0"/>
+			<xs:element name="Surname" type="nonEmptyNameAddressString"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AddressTypeX"/>
+	<xs:complexType name="CompanyAddressType">
+		<xs:complexContent>
+			<xs:extension base="AddressBaseType">
+				<xs:sequence>
+					<xs:element ref="CareofName" minOccurs="0"/>
+					<xs:element ref="PoBox" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ShareholderAddressType">
+		<xs:complexContent>
+			<xs:extension base="AddressBaseType"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DirectorAddressType"/>
+	<xs:complexType name="AnyAddressBaseType">
+		<xs:sequence>
+			<xs:element ref="Premise"/>
+			<xs:element ref="Street"/>
+			<xs:element ref="Thoroughfare" minOccurs="0"/>
+			<xs:element ref="PostTown"/>
+			<xs:element ref="County" minOccurs="0"/>
+			<xs:element ref="Country"/>
+			<xs:element ref="Postcode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AddressBaseType">
+		<xs:sequence>
+			<xs:element ref="Premise"/>
+			<xs:element ref="Street" minOccurs="0"/>
+			<xs:element ref="Thoroughfare" minOccurs="0"/>
+			<xs:element ref="PostTown"/>
+			<xs:element ref="County" minOccurs="0"/>
+			<xs:choice>
+				<xs:element name="Country">
+					<xs:annotation>
+						<xs:documentation>ISO 3 letter country code.</xs:documentation>
+					</xs:annotation>
+					<xs:simpleType>
+						<xs:restriction base="xs:string">
+							<xs:enumeration value="USA"/>
+							<xs:enumeration value="IRL"/>
+							<xs:enumeration value="DEU"/>
+							<xs:enumeration value="FRA"/>
+							<xs:enumeration value="ITA"/>
+							<xs:enumeration value="ESP"/>
+							<xs:enumeration value="PRT"/>
+							<xs:enumeration value="NLD"/>
+							<xs:enumeration value="POL"/>
+							<xs:enumeration value="BEL"/>
+							<xs:enumeration value="NOR"/>
+							<xs:enumeration value="SWE"/>
+							<xs:enumeration value="DNK"/>
+							<xs:enumeration value="AUS"/>
+							<xs:enumeration value="NZL"/>
+							<xs:enumeration value="CAN"/>
+							<xs:enumeration value="ZAF"/>
+							<xs:enumeration value="AUT"/>
+							<xs:enumeration value="HRV"/>
+							<xs:enumeration value="CYP"/>
+							<xs:enumeration value="CZE"/>
+							<xs:enumeration value="EST"/>
+							<xs:enumeration value="HUN"/>
+							<xs:enumeration value="GRC"/>
+							<xs:enumeration value="LTU"/>
+							<xs:enumeration value="GBR"/>
+							<xs:enumeration value="GB-ENG"/>
+							<xs:enumeration value="GB-WLS"/>
+							<xs:enumeration value="GB-SCT"/>
+							<xs:enumeration value="GB-NIR"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+				<xs:element name="OtherForeignCountry">
+					<xs:annotation>
+						<xs:documentation>Free form text name of any other foreign country, may be blank if no country is specified</xs:documentation>
+					</xs:annotation>
+					<xs:simpleType>
+						<xs:restriction base="nameAddressString">
+							<xs:maxLength value="50"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+			</xs:choice>
+			<xs:element ref="Postcode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UKAddressType">
+		<xs:sequence>
+			<xs:element ref="Premise"/>
+			<xs:element ref="Street" minOccurs="0"/>
+			<xs:element ref="Thoroughfare" minOccurs="0"/>
+			<xs:element ref="PostTown"/>
+			<xs:element ref="County" minOccurs="0"/>
+			<xs:element name="Country">
+				<xs:annotation>
+					<xs:documentation>UK country code.</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="GB-ENG"/>
+						<xs:enumeration value="GB-WLS"/>
+						<xs:enumeration value="GB-SCT"/>
+						<xs:enumeration value="GB-NIR"/>
+						<xs:enumeration value="GBR"/>
+						<xs:enumeration value="UNDEF"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element ref="Postcode" minOccurs="0"/>
+			<xs:element ref="CareofName" minOccurs="0"/>
+			<xs:element ref="PoBox" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ROAddressType">
+		<xs:sequence>
+			<xs:element ref="Premise"/>
+			<xs:element ref="Street" minOccurs="0"/>
+			<xs:element ref="Thoroughfare" minOccurs="0"/>
+			<xs:element ref="PostTown"/>
+			<xs:element ref="County" minOccurs="0"/>
+			<xs:element name="Country">
+				<xs:annotation>
+					<xs:documentation>UK country code.</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="GB-ENG"/>
+						<xs:enumeration value="GB-WLS"/>
+						<xs:enumeration value="GB-SCT"/>
+						<xs:enumeration value="GB-NIR"/>
+						<xs:enumeration value="GBR"/>
+						<xs:enumeration value="UNDEF"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element ref="Postcode" minOccurs="1"/>
+			<xs:element ref="CareofName" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="OfficerAppointmentType">
+		<xs:sequence>
+			<xs:element name="Appointee">
+				<xs:annotation>
+					<xs:documentation>Type of Appointee</xs:documentation>
+				</xs:annotation>
+				<xs:complexType>
+					<xs:choice>
+						<xs:element name="Individual">
+							<xs:annotation>
+								<xs:documentation>A single Person</xs:documentation>
+							</xs:annotation>
+							<xs:complexType>
+								<xs:sequence>
+									<xs:element name="Person" type="PersonType"/>
+									<xs:element name="PreviousName" type="NameType" minOccurs="0"/>
+								</xs:sequence>
+							</xs:complexType>
+						</xs:element>
+						<xs:element ref="CorporateName"/>
+					</xs:choice>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Address" type="DirectorAddressType">
+				<xs:annotation>
+					<xs:documentation>Officer Address</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="CorporateIndicator" type="xs:boolean"/>
+	<xs:complexType name="CompanyIdentifierType">
+		<xs:sequence>
+			<xs:element ref="CompanyNumber"/>
+			<xs:element ref="CompanyName"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="Currency">
+		<xs:annotation>
+			<xs:documentation>Use codes according to ISO 4217</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:maxLength value="3"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="PersonChangeType">
+		<xs:sequence>
+			<xs:element ref="Title" minOccurs="0"/>
+			<xs:element ref="Surname"/>
+			<xs:element ref="Forename" minOccurs="0"/>
+			<xs:element ref="OtherForenames" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="NominalCapital">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:totalDigits value="19"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="NumShares">
+		<xs:annotation>
+			<xs:documentation>Used to indicate the number of shares</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:minExclusive value="0"/>
+				<xs:maxInclusive value="999999999999999.999999"/>
+				<xs:fractionDigits value="6"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="TotalAmountUnpaid">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:maxInclusive value="99999999999999999999.999999"/>
+				<xs:fractionDigits value="6"/>
+				<xs:minInclusive value="0"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="TotalNumberOfIssuedShares">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:minExclusive value="0"/>
+				<xs:maxInclusive value="99999999999999999999.999999"/>
+				<xs:fractionDigits value="6"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="ShareValue">
+		<xs:annotation>
+			<xs:documentation>Please show the nominal value of each share. Maximum of 6 decimal places</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="positiveDecimal">
+				<xs:fractionDigits value="6"/>
+				<xs:totalDigits value="8"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AmountPaidDuePerShare">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:fractionDigits value="6"/>
+				<xs:minInclusive value="0"/>
+				<xs:maxInclusive value="999999999999999.999999"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AmountUnpaidPerShare">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:fractionDigits value="6"/>
+				<xs:minInclusive value="0"/>
+				<xs:maxInclusive value="999999999999999.999999"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="PersonalAttributeType">
+		<xs:sequence>
+			<xs:element name="PersonalAttribute">
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="BIRTOWN"/>
+						<xs:enumeration value="TEL"/>
+						<xs:enumeration value="NATINS"/>
+						<xs:enumeration value="PASSNO"/>
+						<xs:enumeration value="MUM"/>
+						<xs:enumeration value="DAD"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="PersonalData">
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyOtherDataString">
+						<xs:minLength value="3"/>
+						<xs:maxLength value="3"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="PersonalAuthentication" type="PersonalAttributeType">
+		<xs:annotation>
+			<xs:documentation>Officers personal authentication</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="PersonalAuthenticationData" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Values supplied for the personal authentication items</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="PersonalAuthenitcationItem" type="otherDataString">
+		<xs:annotation>
+			<xs:documentation>Indicates type of personal authentication item supplied</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="PersonalAuthenticationCode">
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="6"/>
+				<xs:maxLength value="6"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="IssuedShareType">
+		<xs:complexContent>
+			<xs:extension base="ShareQuantityClassType">
+				<xs:sequence>
+					<xs:element ref="AggregrateNominalValue"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:element name="ShareClass">
+		<xs:annotation>
+			<xs:documentation>Type of Share</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyOtherDataString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="ShareQuantityValueType">
+		<xs:sequence>
+			<xs:element ref="NumShares"/>
+			<xs:element ref="Currency"/>
+			<xs:element ref="ShareValue"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="NumSharesIssued" type="xs:integer"/>
+	<xs:element name="AggregrateNominalValue" type="xs:decimal">
+		<xs:annotation>
+			<xs:documentation>Indicates the aggregate nominal value (Numshares x ShareValue)</xs:documentation>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="PrescribedParticulars">
+		<xs:annotation>
+			<xs:documentation>Description of the rights assoicated with the share class</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="4000"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="AmalgamatedNameType">
+		<xs:sequence>
+			<xs:element ref="Surname"/>
+			<xs:element ref="Forename"/>
+			<xs:element name="AmalgamatedName" type="nameAddressString"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ShareHolderType">
+		<xs:sequence>
+			<xs:choice>
+				<xs:element ref="CorporateName"/>
+				<xs:element name="Person">
+					<xs:complexType>
+						<xs:choice>
+							<xs:element name="Name" type="NameType"/>
+							<xs:element name="AmalgamatedName">
+								<xs:simpleType>
+									<xs:restriction base="nameAddressString">
+										<xs:maxLength value="160"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+						</xs:choice>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+			<xs:element name="Address" type="ShareholderAddressType">
+				<xs:annotation>
+					<xs:appinfo>if (ServiceAddressInd NOT equal 0 or ForeignAddress NOT equal 0)
+
+						Reject</xs:appinfo>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TotalShareCapitalType">
+		<xs:sequence>
+			<xs:element name="TotalNumberShareIssued" type="xs:integer"/>
+			<xs:element name="TotalAggregateNominalValue" type="xs:integer"/>
+			<xs:element ref="Currency"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="Designation">
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="DIR"/>
+				<xs:enumeration value="SEC"/>
+				<xs:enumeration value="SOLICITOR"/>
+				<xs:enumeration value="ADMINISTRATOR"/>
+				<xs:enumeration value="ADMINRECEIVER"/>
+				<xs:enumeration value="RECMGR"/>
+				<xs:enumeration value="RECEIVER"/>
+				<xs:enumeration value="SUBSCRIBER"/>
+				<xs:enumeration value="AGENT"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="ShareQuantityClassType">
+		<xs:sequence>
+			<xs:element ref="ShareClass"/>
+			<xs:element ref="NumShares"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CapitalType">
+		<xs:sequence>
+			<xs:element name="TotalNominalValue">
+				<xs:simpleType>
+					<xs:restriction base="xs:decimal">
+						<xs:totalDigits value="19"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element ref="Currency"/>
+			<xs:element ref="ShareValue" minOccurs="0"/>
+			<xs:element ref="NumShares" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PersCorpAuthType">
+		<xs:choice>
+			<xs:element name="PersonalDetails" type="PersonalAttributeType" minOccurs="3" maxOccurs="3">
+				<xs:annotation>
+					<xs:documentation>Personal Authentication</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Corporate" type="NameType" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Surname and Forename of an officer of the Corporate company.</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="DirectorType">
+		<xs:annotation>
+			<xs:documentation>A Company Director</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:choice>
+				<xs:element ref="CorporateName"/>
+				<xs:element name="Person">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PersonBaseType">
+								<xs:sequence>
+									<xs:element ref="DOB"/>
+									<xs:element ref="Nationality"/>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+			<xs:element name="Address" type="DirectorAddressType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SecretaryType">
+		<xs:annotation>
+			<xs:documentation>A Company Secretary</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:choice>
+				<xs:element ref="CorporateName"/>
+				<xs:element name="Person" type="PersonBaseType"/>
+			</xs:choice>
+			<xs:element name="Address" type="DirectorAddressType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PersonAddrType">
+		<xs:sequence>
+			<xs:element name="Name" type="NameType"/>
+			<xs:element name="Address" type="AddressBaseType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FooterDetails">
+		<xs:sequence>
+			<xs:element ref="Designation"/>
+			<xs:element name="DateSigned" type="xs:date"/>
+			<xs:element name="ContactAddress" type="AddressType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="Premise">
+		<xs:annotation>
+			<xs:documentation>AddressLine 1</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Street">
+		<xs:annotation>
+			<xs:documentation>AddressLine2</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="Thoroughfare">
+		<xs:annotation>
+			<xs:documentation>AddressLine3</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="50"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="ForeignAddress" type="xs:boolean">
+		<xs:annotation>
+			<xs:documentation>Indicates that this is a Foreign Address</xs:documentation>
+			<xs:appinfo/>
+		</xs:annotation>
+	</xs:element>
+	<xs:element name="CorporateName">
+		<xs:annotation>
+			<xs:documentation>Company name</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="160"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CareofName">
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="100"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="AddressType"/>
+	<xs:complexType name="SecretaryAppointmentType">
+		<xs:annotation>
+			<xs:documentation>A Company Secretary Appointment </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="PersonBaseType">
+							<xs:sequence>
+								<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+								<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Corporate" type="CorporateOfficerAppointmentType"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="IncorporationSecretaryAppointmentType">
+		<xs:annotation>
+			<xs:documentation>A Company Secretary Appointment </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="PersonBaseType">
+							<xs:sequence>
+								<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+								<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Corporate" type="IncorporationCorporateOfficerAppointmentType"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="CompanyDataSecretaryType">
+		<xs:annotation>
+			<xs:documentation>A Company Secretary Returned in Company Data </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="PersonReturnType">
+							<xs:sequence>
+								<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+								<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Corporate" type="CorporateOfficerAppointmentType"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="DirectorAppointmentType">
+		<xs:annotation>
+			<xs:documentation>A Company Director Appointment </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="DirectorPersonType">
+							<xs:sequence>
+								<xs:element name="ResidentialAddress">
+									<xs:complexType>
+										<xs:complexContent>
+											<xs:extension base="ResidentialAddressType"/>
+										</xs:complexContent>
+									</xs:complexType>
+								</xs:element>
+								<xs:element name="VerificationDetails" type="VerificationDetailsType" />
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Corporate" type="CorporateOfficerAppointmentType"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="IncorporationDirectorAppointmentType">
+		<xs:annotation>
+			<xs:documentation>A Company Director Appointment </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="DirectorPersonType">
+							<xs:sequence>
+								<xs:element name="ResidentialAddress">
+									<xs:complexType>
+										<xs:complexContent>
+											<xs:extension base="ResidentialAddressType"/>
+										</xs:complexContent>
+									</xs:complexType>
+								</xs:element>
+								<xs:element name="VerificationDetails" type="VerificationDetailsType" />
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Corporate" type="IncorporationCorporateOfficerAppointmentType"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="CorporateOfficerAppointmentType">
+		<xs:annotation>
+			<xs:documentation>A Corporate Officer Appointment </xs:documentation>
+		</xs:annotation>
+		<xs:complexContent>
+			<xs:extension base="NameType">
+				<xs:sequence>
+					<xs:element ref="CorporateName"/>
+					<xs:element name="Address" type="CompanyAddressType"/>
+					<xs:element ref="CompanyIdentification"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="IncorporationCorporateOfficerAppointmentType">
+		<xs:annotation>
+			<xs:documentation>A Corporate Officer Appointment </xs:documentation>
+		</xs:annotation>
+		<xs:complexContent>
+			<xs:extension base="NameType">
+				<xs:sequence>
+					<xs:element ref="CorporateName"/>
+					<xs:element name="Address" type="CompanyAddressType"/>
+					<xs:element name="CompanyIdentification" type="IncorporationCompanyIdentification"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CorporateOfficerType">
+		<xs:annotation>
+			<xs:documentation>A Corporate Officer </xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element ref="CorporateName"/>
+			<xs:element name="Address" type="CompanyAddressType"/>
+			<xs:element ref="CompanyIdentification" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DirectorIncorporationAppointmentType">
+		<xs:annotation>
+			<xs:documentation>A Company Director Appointment </xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="Address">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="DirectorAddressType"/>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:choice>
+				<xs:element name="Person">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PersonBaseType">
+								<xs:sequence>
+									<xs:element ref="DOB"/>
+									<xs:element ref="Nationality"/>
+									<xs:element name="PreviousName" type="PreviousNameType" minOccurs="0"/>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Corporate">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="NameType">
+								<xs:sequence>
+									<xs:element ref="CorporateName"/>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="SubmissionNumber">
+		<xs:annotation>
+			<xs:documentation>Submission Number for filing</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="otherDataString">
+				<xs:minLength value="6"/>
+				<xs:maxLength value="6"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CompanyAuthenticationCode">
+		<xs:annotation>
+			<xs:documentation>Authentication Code of the Company for which the submission relates</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="6"/>
+				<xs:maxLength value="8"/>
+				<xs:whiteSpace value="preserve"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="IncorporationAppointmentType">
+		<xs:annotation>
+			<xs:documentation>Class of appointment at incorporation (dir, sec).</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="DIR">
+					<xs:annotation>
+						<xs:documentation>This appointment is for a Director</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+				<xs:enumeration value="SEC">
+					<xs:annotation>
+						<xs:documentation>This appointment is for a Secretary</xs:documentation>
+					</xs:annotation>
+				</xs:enumeration>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="StatementOfCapitalType">
+		<xs:sequence>
+			<xs:element name="Capital" maxOccurs="unbounded">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element ref="TotalAmountUnpaid"/>
+						<xs:element ref="TotalNumberOfIssuedShares"/>
+						<xs:element name="ShareCurrency" type="iso3currency"/>
+						<xs:element ref="TotalAggregateNominalValue"/>
+						<xs:element name="Shares" maxOccurs="unbounded">
+							<xs:complexType>
+								<xs:sequence>
+									<xs:element ref="ShareClass"/>
+									<xs:element ref="PrescribedParticulars"/>
+									<xs:element ref="NumShares"/>
+									<xs:element ref="AggregateNominalValue"/>
+								</xs:sequence>
+							</xs:complexType>
+						</xs:element>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AllotmentType">
+		<xs:sequence>
+			<xs:element ref="ShareClass"/>
+			<xs:element ref="NumShares"/>
+			<xs:element ref="AmountPaidDuePerShare"/>
+			<xs:element ref="AmountUnpaidPerShare"/>
+			<xs:element name="ShareCurrency" type="current_iso3currency"/>
+			<xs:element ref="ShareValue"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ServiceAddressType">
+		<xs:choice>
+			<xs:element name="SameAsRegisteredOffice">
+				<xs:annotation>
+					<xs:documentation>The address is the same as Registered Office address</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="4"/>
+						<xs:enumeration value="true"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:sequence>
+				<xs:element name="Address" type="CompanyAddressType"/>
+			</xs:sequence>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="ResidentialAddressType">
+		<xs:choice>
+			<xs:element name="SameAsServiceAddress">
+				<xs:annotation>
+					<xs:documentation>The address is the same as Service address</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="4"/>
+						<xs:enumeration value="true"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:sequence>
+				<xs:element name="Address" type="AddressBaseType"/>
+				<xs:element ref="SecureAddressInd" minOccurs="0"/>
+			</xs:sequence>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="ShareholderNameType">
+		<xs:sequence>
+			<xs:element ref="Forename" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element ref="Surname"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="AmountPaidUp">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:fractionDigits value="2"/>
+				<xs:totalDigits value="8"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AmountUnpaid">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:fractionDigits value="2"/>
+				<xs:totalDigits value="8"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="TotalAggregateNominalValue">
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:minExclusive value="0"/>
+				<xs:maxInclusive value="99999999999999999999.999999"/>
+				<xs:fractionDigits value="6"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="AggregateNominalValue">
+		<xs:annotation>
+			<xs:documentation>The number of shares issued multiplied by the nominal value of each share</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:decimal">
+				<xs:minExclusive value="0"/>
+				<xs:maxInclusive value="999999999999999.999999"/>
+				<xs:fractionDigits value="6"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CountryOfResidence">
+		<xs:annotation>
+			<xs:documentation>The country or state of normal residence</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="SecureAddressInd" type="xs:boolean"/>
+	<xs:element name="CompanyIdentification">
+		<xs:annotation>
+			<xs:documentation>Company Identification Details</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:choice>
+				<xs:annotation>
+					<xs:documentation>Indicates if the officer is a UK Limited company or an Other Corporate Body or Firm</xs:documentation>
+				</xs:annotation>
+				<xs:element name="UK">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="RegistrationNumber"/>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="NonUK">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="PlaceRegistered" minOccurs="0"/>
+							<xs:element ref="RegistrationNumber" minOccurs="0"/>
+							<xs:element name="LawGoverned">
+								<xs:annotation>
+									<xs:documentation>The legal authority supervising the company</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="nonEmptyNameAddressString">
+										<xs:minLength value="1"/>
+										<xs:maxLength value="50"/>
+										<xs:whiteSpace value="collapse"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="LegalForm">
+								<xs:annotation>
+									<xs:documentation>The legal form of the company as defined its country of registration</xs:documentation>
+								</xs:annotation>
+								<xs:simpleType>
+									<xs:restriction base="nonEmptyOtherDataString">
+										<xs:minLength value="1"/>
+										<xs:maxLength value="50"/>
+										<xs:whiteSpace value="collapse"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+		</xs:complexType>
+	</xs:element>
+	<xs:complexType name="IncorporationCompanyIdentification">
+		<xs:choice>
+			<xs:annotation>
+				<xs:documentation>Indicates if the officer is a UK Limited company or an Other Corporate Body or Firm</xs:documentation>
+			</xs:annotation>
+			<xs:element name="UK">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element ref="RegistrationNumber"/>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="NonUK">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element ref="PlaceRegistered" minOccurs="0"/>
+						<xs:element ref="RegistrationNumber" minOccurs="0"/>
+						<xs:element name="LawGoverned">
+							<xs:annotation>
+								<xs:documentation>The legal authority supervising the company</xs:documentation>
+							</xs:annotation>
+							<xs:simpleType>
+								<xs:restriction base="nonEmptyNameAddressString">
+									<xs:minLength value="1"/>
+									<xs:maxLength value="50"/>
+									<xs:whiteSpace value="collapse"/>
+								</xs:restriction>
+							</xs:simpleType>
+						</xs:element>
+						<xs:element name="LegalForm">
+							<xs:annotation>
+								<xs:documentation>The legal form of the company as defined its country of registration</xs:documentation>
+							</xs:annotation>
+							<xs:simpleType>
+								<xs:restriction base="nonEmptyOtherDataString">
+									<xs:minLength value="1"/>
+									<xs:maxLength value="50"/>
+									<xs:whiteSpace value="collapse"/>
+								</xs:restriction>
+							</xs:simpleType>
+						</xs:element>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+		</xs:choice>
+	</xs:complexType>
+	<xs:element name="PlaceRegistered">
+		<xs:annotation>
+			<xs:documentation>Where the company is registered</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyNameAddressString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="50"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="CountryStr">
+		<xs:annotation>
+			<xs:documentation>Country name as a string, only when CountryCode is Other</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="nameAddressString">
+				<xs:maxLength value="50"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="RegistrationNumber">
+		<xs:simpleType>
+			<xs:restriction base="nonEmptyOtherDataString">
+				<xs:minLength value="1"/>
+				<xs:maxLength value="20"/>
+				<xs:whiteSpace value="collapse"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:element name="RecordType">
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:enumeration value="MEMBER"/>
+				<xs:enumeration value="DIRCONTRACT"/>
+				<xs:enumeration value="DIRINDEM"/>
+				<xs:enumeration value="RESMEET"/>
+				<xs:enumeration value="DEB"/>
+				<xs:enumeration value="CHARGEEWNI"/>
+				<xs:enumeration value="CHARGESC"/>
+				<xs:enumeration value="OWNSHRPURCH"/>
+				<xs:enumeration value="OWNSHRCAP"/>
+				<xs:enumeration value="INVEST"/>
+				<xs:enumeration value="INTEREST"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="DirectorPersonType">
+		<xs:complexContent>
+			<xs:extension base="PersonBaseType">
+				<xs:sequence>
+					<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+					<xs:element ref="DOB"/>
+					<xs:element ref="Nationality"/>
+					<xs:element ref="CountryOfResidence" minOccurs="0"/>
+					<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DirectorPersonReturnType">
+		<xs:complexContent>
+			<xs:extension base="PersonReturnType">
+				<xs:sequence>
+					<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+					<xs:element ref="DOB"/>
+					<xs:element ref="Nationality"/>
+					<xs:element ref="CountryOfResidence" minOccurs="0"/>
+					<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DirectorReturnType">
+		<xs:annotation>
+			<xs:documentation>A Company Director Annual Return </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person" type="DirectorPersonType"/>
+			<xs:element name="Corporate" type="CorporateOfficerType"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="MemberReturnType">
+		<xs:annotation>
+			<xs:documentation>An LLP Member Type </xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="DesignatedInd">
+				<xs:annotation>
+					<xs:documentation>Designated Member Indicator</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="true"/>
+						<xs:enumeration value="false"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:choice>
+				<xs:element name="Person">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PersonBaseType">
+								<xs:sequence>
+									<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+									<xs:element ref="DOB"/>
+									<xs:element ref="CountryOfResidence"/>
+									<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Corporate" type="CorporateOfficerType"/>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SecretaryReturnType">
+		<xs:annotation>
+			<xs:documentation>A Company Secretary Annual Return </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="PersonBaseType">
+							<xs:sequence>
+								<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+								<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Corporate" type="CorporateOfficerType"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="MemberAppointmentType">
+		<xs:annotation>
+			<xs:documentation>An LLP Member Type </xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="DesignatedInd">
+				<xs:annotation>
+					<xs:documentation>Designated Member Indicator</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="true"/>
+						<xs:enumeration value="false"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:choice>
+				<xs:element name="Person">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PersonBaseType">
+								<xs:sequence>
+									<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+									<xs:element ref="DOB"/>
+									<xs:element ref="CountryOfResidence"/>
+									<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+									<xs:element name="ResidentialAddress" type="ResidentialAddressType"/>
+									<xs:element name="VerificationDetails" type="VerificationDetailsType" />
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Corporate" type="CorporateOfficerAppointmentType"/>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="IncorporationMemberAppointmentType">
+		<xs:annotation>
+			<xs:documentation>An LLP Member Type </xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="DesignatedInd">
+				<xs:annotation>
+					<xs:documentation>Designated Member Indicator</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="true"/>
+						<xs:enumeration value="false"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:choice>
+				<xs:element name="Person">
+					<xs:complexType>
+						<xs:complexContent>
+							<xs:extension base="PersonBaseType">
+								<xs:sequence>
+									<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+									<xs:element ref="DOB"/>
+									<xs:element ref="CountryOfResidence"/>
+									<xs:element name="PreviousNames" type="PreviousNameType" minOccurs="0" maxOccurs="unbounded"/>
+									<xs:element name="ResidentialAddress" type="ResidentialAddressType"/>
+									<xs:element name="VerificationDetails" type="VerificationDetailsType" />
+								</xs:sequence>
+							</xs:extension>
+						</xs:complexContent>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Corporate" type="IncorporationCorporateOfficerAppointmentType"/>
+			</xs:choice>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MemberType">
+		<xs:annotation>
+			<xs:documentation>An LLP Member Type </xs:documentation>
+		</xs:annotation>
+		<xs:choice>
+			<xs:element name="Person">
+				<xs:complexType>
+					<xs:complexContent>
+						<xs:extension base="PersonBaseType">
+							<xs:sequence>
+								<xs:element name="ServiceAddress" type="ServiceAddressType"/>
+								<xs:element ref="DOB"/>
+								<xs:element ref="CountryOfResidence"/>
+							</xs:sequence>
+						</xs:extension>
+					</xs:complexContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Corporate" type="CorporateOfficerType"/>
+			<xs:element name="DesignatedInd" type="xs:boolean">
+				<xs:annotation>
+					<xs:documentation>Indicates if the member is designated</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:choice>
+	</xs:complexType>
+	<xs:element name="CompanyCategory">
+		<xs:annotation>
+			<xs:documentation>The Type of Company</xs:documentation>
+		</xs:annotation>
+		<xs:simpleType>
+			<xs:restriction base="xs:string">
+				<xs:minLength value="2"/>
+				<xs:maxLength value="160"/>
+				<xs:whiteSpace value="preserve"/>
+				<xs:enumeration value="PLC"/>
+				<xs:enumeration value="BYSHR"/>
+				<xs:enumeration value="BYGUAR"/>
+				<xs:enumeration value="BYSHREXUNDSEC60"/>
+				<xs:enumeration value="BYGUAREXUNDSEC60"/>
+				<xs:enumeration value="UNLCWSHRCAP"/>
+				<xs:enumeration value="UNLCWOSHRCAP"/>
+				<xs:enumeration value="LLP"/>
+			</xs:restriction>
+		</xs:simpleType>
+	</xs:element>
+	<xs:complexType name="SubsidiaryAndAssociatedUndertakingsType">
+		<xs:annotation>
+			<xs:documentation>List of any Subsidiary and Associated Undertakings</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="SubCompanyName">
+				<xs:annotation>
+					<xs:documentation>Subsidiary or Associated Company Name.</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="nonEmptyNameAddressString">
+						<xs:minLength value="1"/>
+						<xs:maxLength value="160"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="SubCompanyNumber" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Registered Company Number if any</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:maxLength value="10"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="ShareDescription" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>number, description and amount of shares held</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="otherDataString">
+						<xs:maxLength value="50"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="OtherDetails" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Other details about the Subsidiary and Associated Undertakings</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="otherDataString">
+						<xs:maxLength value="100"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DatePeriod">
+		<xs:sequence>
+			<xs:element ref="StartDate"/>
+			<xs:element ref="EndDate"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:element name="ConsentToAct" type="xs:boolean"/>
+	<xs:complexType name="PartialDOBType">
+		<xs:sequence>
+			<xs:element name="Month">
+				<xs:simpleType>
+					<xs:restriction base="xs:integer">
+						<xs:minInclusive value="1"/>
+						<xs:maxInclusive value="12"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="Year">
+				<xs:simpleType>
+					<xs:restriction base="xs:integer">
+						<xs:totalDigits value="4"/>
+						<xs:minInclusive value="1900"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:simpleType name="AcceptLawfulPurposeStatement">
+		<xs:annotation>
+			<xs:documentation>The company confirms that its intended future activities are lawful.</xs:documentation>
+			<xs:documentation>The limited liability partnership confirms that it's intended future activities are lawful</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:string">
+			<xs:length value="4"/>
+			<xs:whiteSpace value="collapse"/>
+			<xs:enumeration value="true"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AcceptAppropriateOfficeAddressStatement">
+		<xs:annotation>
+			<xs:documentation>The company confirms that the new registered office address is an appropriate address as outlined in section 86(2) of the Companies Act 2006.</xs:documentation>
+			<xs:documentation>The new registered office address is an appropriate address as outlined in section 2(5) of the Limited Liability Partnerships Act 2000.</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:string">
+			<xs:length value="4"/>
+			<xs:whiteSpace value="collapse"/>
+			<xs:enumeration value="true"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RegisteredEmailAddress">
+		<xs:annotation>
+			<xs:documentation>The registered email address for the company</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:string">
+			<xs:maxLength value="256"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="VerificationDirectorType">
+		<xs:sequence>
+			<xs:element name="Person" type="VerificationPersonType" />
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="VerificationMemberType">
+		<xs:sequence>
+			<xs:element name="Person" type="VerificationPersonType" />
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="VerificationPersonType">
+		<xs:sequence>
+			<xs:element ref="Title" minOccurs="0"/>
+			<xs:element ref="Forename"/>
+			<xs:element ref="OtherForenames" minOccurs="0"/>
+			<xs:element ref="Surname"/>
+			<xs:element ref="DOB"/>
+			<xs:element name="VerificationDetails" type="VerificationDetailsType" />
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="VerificationStatementsType">
+		<xs:annotation>
+			<xs:documentation>Contains various verification statements required under the ECCT bill. Use this for verification statements that are required by law.</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="VerificationStatementForIndividual" maxOccurs="unbounded">
+				<xs:simpleType>
+					<xs:restriction base="xs:string">
+						<xs:enumeration value="INDIVIDUAL_VERIFIED">
+							<xs:annotation>
+								<xs:documentation>Indicates a declaration of the verified status for the individual. Use this to declare a person has verified their identity.</xs:documentation>
+							</xs:annotation>
+						</xs:enumeration>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:simpleType name="NameMismatchReason">
+		<xs:annotation>
+			<xs:documentation>Reason for discrepancy in name when verified</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="PREFERRED_NAME">
+				<xs:annotation>
+					<xs:documentation>Preferred name</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="LEGALLY_CHANGED">
+				<xs:annotation>
+					<xs:documentation>Legally changed name (for example, marriage or divorce)</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="TRANSLATION_OR_DIFF_CONV">
+				<xs:annotation>
+					<xs:documentation>Translation or a different naming convention</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="REGISTER_ERROR">
+				<xs:annotation>
+					<xs:documentation>Error on the public register</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="NOT_SAY">
+				<xs:annotation>
+					<xs:documentation>Prefer not to say</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:whiteSpace value="collapse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="VerificationDetailsType">
+		<xs:annotation>
+			<xs:documentation>Verification details of The Individual</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="CompaniesHousePersonalCode">
+				<xs:simpleType>
+					<xs:annotation>
+						<xs:documentation>The Personal Verification Code of The Individual</xs:documentation>
+					</xs:annotation>
+					<xs:restriction base="xs:string">
+						<xs:minLength value="11"/>
+						<xs:maxLength value="11"/>
+						<xs:whiteSpace value="collapse"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="VerificationStatements" type="VerificationStatementsType" />
+			<xs:element name="NameMismatchReason" type="NameMismatchReason" minOccurs="0" />
+		</xs:sequence>
+	</xs:complexType>
+	<xs:simpleType name="MemorandumPersonalAuthenticationType">
+		<xs:restriction base="xs:string">
+			<xs:whiteSpace value="collapse"/>
+			<xs:minLength value="1"/>
+			<xs:maxLength value="50"/>
+			<xs:enumeration value="SUBSCRIBER_AGREES_NAME_USED_TO_AUTHENTICATE">
+				<xs:annotation>
+					<xs:documentation>The subscriber agrees their name is used to electronically authenticate the memorandum of association.</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="GUARANTOR_AGREES_NAME_USED_TO_AUTHENTICATE">
+				<xs:annotation>
+					<xs:documentation>The guarantor agrees their name is used to electronically authenticate the memorandum of association.</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AuthoriserPersonalAuthenticationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AUTHORISER_AGREES_NAME_USED_TO_AUTHENTICATE">
+				<xs:annotation>
+					<xs:documentation>The authoriser agrees their name is used to electronically authenticate the statement of compliance.</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="SubscriberAuthorisationType">
+		<xs:sequence>
+			<xs:element name="MemorandumPersonalAuthentication" type="MemorandumPersonalAuthenticationType" />
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AuthoriserAuthorisationType">
+		<xs:sequence>
+			<xs:element name="AuthoriserPersonalAuthentication" type="AuthoriserPersonalAuthenticationType" />
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>
