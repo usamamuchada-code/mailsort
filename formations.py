@@ -1,5 +1,5 @@
 """
-UK Formations tab (v41a) – incorporate UK companies and LLPs straight to Companies House by software filing
+UK Formations tab (v41b) – incorporate UK companies and LLPs straight to Companies House by software filing
 (XML Gateway, form "CompanyIncorporation" – schema CompanyIncorporation-v3-8, FormSubmission-v2-11).
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config, send_email).
@@ -39,10 +39,10 @@ try:
 except Exception:  # pragma: no cover – the tab shows a clear message instead
     etree = None
 
-VERSION = "v41a"
+VERSION = "v41b"
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get("DATA_DIR") or ROOT / "data")
-OUT = DATA / "formations"
+OUT = DATA / "uk_formations"   # own folder – the removed v39a tab left old files in DATA/formations
 SETTINGS_FILE = OUT / "settings.json"
 SCHEMA_ZIP = ROOT / "ch_schemas.zip"
 SCHEMA_DIR = OUT / "schemas"
@@ -212,7 +212,9 @@ def list_jobs() -> list[dict]:
     if OUT.exists():
         for p in OUT.glob("*/meta.json"):
             try:
-                out.append(json.loads(p.read_text()))
+                m = json.loads(p.read_text())
+                if isinstance(m, dict) and isinstance(m.get("a"), dict) and m.get("id"):
+                    out.append(m)
             except Exception:
                 pass
     out.sort(key=lambda m: m.get("created", ""), reverse=True)
