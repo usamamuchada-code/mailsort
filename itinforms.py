@@ -788,14 +788,22 @@ def make_signature_png(data: bytes) -> bytes:
     return buf.getvalue()
 
 
-def signed_w7_pdf(w7: bytes, sig: bytes) -> bytes:
+W7_AGENT_SIGN_BOX = (113.0, 705.8, 321.0, 719.6)    # Acceptance Agent "Signature" writing area (v38q)
+RP_SIG_FILE = OUT / "rp_signature.png"               # our responsible party's signature (CAA settings)
+
+
+def signed_w7_pdf(w7: bytes, sig: bytes, rp_sig: bytes | None | bool = True) -> bytes:
     """v38m – the filled W-7 exactly as normal, with the client's signature placed in the applicant
-    signature box. No watermark or markings. Separate download – the stored W-7 file is not changed."""
+    signature box. No watermark or markings. Separate download – the stored W-7 file is not changed.
+    v38q: our responsible party's signature (saved once in CAA settings) goes in the Acceptance Agent box."""
     import pymupdf
+    if rp_sig is True:
+        rp_sig = RP_SIG_FILE.read_bytes() if RP_SIG_FILE.exists() else None
     doc = pymupdf.open(stream=w7, filetype="pdf")
-    box = W7_SIGN_BOX
-    doc[0].insert_image(pymupdf.Rect(box[0] + 2, box[1] + 0.5, box[2] - 2, box[3] - 0.5), stream=sig,
-                        keep_proportion=True, overlay=True)
+    for img, box in ((sig, W7_SIGN_BOX), (rp_sig, W7_AGENT_SIGN_BOX)):
+        if img:
+            doc[0].insert_image(pymupdf.Rect(box[0] + 2, box[1] + 0.5, box[2] - 2, box[3] - 0.5), stream=img,
+                                keep_proportion=True, overlay=True)
     buf = io.BytesIO()
     doc.save(buf, garbage=3, deflate=True)
     return buf.getvalue()
@@ -1683,6 +1691,34 @@ def itin_signature(job):
     return redirect(f"/itin/job/{job}#signature")
 
 
+@bp.post("/itin/caa/signature")
+def itin_rp_signature():
+    """v38q – responsible party's signature (photo/scan) for the Acceptance Agent box of the signed W-7."""
+    with _LOCK:
+        if request.form.get("action") == "remove":
+            RP_SIG_FILE.unlink(missing_ok=True)
+            flash("Responsible party signature removed.")
+        else:
+            up = request.files.get("file")
+            if not up or not up.filename:
+                flash("⚠ Choose a photo or scan of the responsible party's signature.")
+                return redirect("/itin#caa")
+            try:
+                RP_SIG_FILE.write_bytes(make_signature_png(up.read()))
+            except Exception as ex:
+                flash(f"⚠ {ex}" if isinstance(ex, ValueError) else "⚠ Could not read that image – try a JPG/PNG photo.")
+                return redirect("/itin#caa")
+            flash("✔ Responsible party signature saved – it is now on every \"W-7 with client signature\" (Acceptance Agent box).")
+    return redirect("/itin#caa")
+
+
+@bp.get("/itin/caa/signature.png")
+def itin_rp_signature_png():
+    if not RP_SIG_FILE.exists():
+        abort(404)
+    return send_file(RP_SIG_FILE, mimetype="image/png", max_age=0)
+
+
 @bp.get("/itin/job/<job>/w7-signed.pdf")
 def itin_w7_signed(job):
     d = _job_dir(job)
@@ -1795,9 +1831,9 @@ def register(app, cfg_fn=None, send_fn=None):
     @app.context_processor
     def _itin_badge():          # red number next to "ITIN" in the menu: overdue/stuck applications + PTIN renewal
         try:
-            return {"itin_alerts": alert_count()}
+            return {"itin_alerts": alert_count(), "rp_sig_on_file": RP_SIG_FILE.exists()}
         except Exception:
-            return {"itin_alerts": 0}
+            return {"itin_alerts": 0, "rp_sig_on_file": False}
 
 
 # ----------------------------------------------------------------------------- pages
@@ -1890,7 +1926,17 @@ The tracker ticks client consent (and the signatures, if you enter their dates) 
  <div><label>Our mailing address for W-7 line 2 – city, state, ZIP, country</label><input type="text" name="our_mail_2" value="{{caa.our_mail_2}}"></div>
  <div><label>Our London address for W-7 line 2 – street</label><input type="text" name="london_mail_1" value="{{caa.london_mail_1}}"></div>
  <div><label>Our London address for W-7 line 2 – city, postcode, country</label><input type="text" name="london_mail_2" value="{{caa.london_mail_2}}"></div>
-</div><div style="margin-top:12px"><button class="btn" type="submit">Save Acceptance Agent details</button></div></form></details></div>
+</div><div style="margin-top:12px"><button class="btn" type="submit">Save Acceptance Agent details</button></div></form>
+<div id="caa" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)"><b>✍ Responsible party signature</b>
+<p class="muted" style="margin:4px 0 8px">Upload a photo or scan of {{caa.responsible_party or 'the responsible party'}}'s signature once. It is placed in the
+Acceptance Agent signature box of every <b>W-7 with client signature</b> (and printing pack 1). The stored W-7 and COA are not changed.</p>
+{% if rp_sig_on_file %}<div style="border:1px solid var(--line);border-radius:8px;padding:8px 14px;background:#fff;display:inline-block;margin-bottom:8px"><img src="/itin/caa/signature.png?v={{range(1,99999)|random}}" alt="responsible party signature" style="max-height:60px;max-width:300px;display:block"></div>{% endif %}
+<div class="btnrow"><form method="post" action="/itin/caa/signature" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+<div><label>{{ 'Replace signature' if rp_sig_on_file else 'Signature photo / scan' }}</label><input type="file" name="file" accept="image/*,application/pdf" required></div>
+<button class="btn" type="submit">Upload signature</button></form>
+{% if rp_sig_on_file %}<form method="post" action="/itin/caa/signature" onsubmit="return confirm('Remove the responsible party signature?')"><input type="hidden" name="action" value="remove"><button class="btn secondary" type="submit">Remove</button></form>{% endif %}</div></div>
+</details></div>
+<script>if(location.hash=='#caa'){var _c=document.getElementById('caa');if(_c){_c.closest('details').open=true;setTimeout(function(){_c.scrollIntoView()},50)}}</script>
 
 {% if not review %}<div class="card" id="engagement"><details><summary style="cursor:pointer;font-weight:700;font-size:16px">Client engagement form wording (signed online by clients)</summary>
 <p class="muted">This is the text clients see and sign from the link on each application. {fee} is replaced by the fee entered for that client. Keep the numbered headings – a blank line separates sections and lines starting with "- " become bullet points.</p>
@@ -2561,7 +2607,8 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 {% endif %}
 {% if m.status not in ('kyc_sent', 'kyc_received') %}<div class="card" id="signature"><h2 style="margin-top:0">✍ Client signature</h2>
 <p class="muted" style="margin-top:0">Upload the photo or scan of the signature the client sent. It is cleaned up (paper background removed) and placed in the
-applicant signature box of a separate <b>W-7 with client signature</b> download – the filled W-7 exactly as normal. The stored W-7 and COA are not changed.</p>
+applicant signature box of a separate <b>W-7 with client signature</b> download – the filled W-7 exactly as normal. The stored W-7 and COA are not changed.
+{% if rp_sig_on_file %}Our responsible party's signature is added in the Acceptance Agent box.{% else %}<span style="color:#b45309">To add {{m.caa.responsible_party or 'our responsible party'}}'s signature in the Acceptance Agent box, upload it once under <a href="/itin#caa">Our Acceptance Agent details</a>.</span>{% endif %}</p>
 {% if m.signature %}<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
 <div style="border:1px solid var(--line);border-radius:8px;padding:8px 14px;background:#fff"><img src="/itin/job/{{m.job}}/signature.png?v={{m.signature.when}}" alt="client signature" style="max-height:70px;max-width:320px;display:block"></div>
 <div class="muted" style="font-size:13px">From {{m.signature.orig}}<br>added {{m.signature.when|ukdate}} by {{m.signature.staff}}</div></div>{% endif %}
