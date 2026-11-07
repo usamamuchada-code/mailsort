@@ -1427,6 +1427,18 @@ def itin_generate():
     return redirect(f"/itin/job/{job}")
 
 
+def _tax_ctx(m):
+    try:
+        import taxreturn
+        ys = taxreturn.years_available()
+        forms = {y: [lbl for k, (lbl, _s, _q) in taxreturn.FORMS.items() if taxreturn.template(k, y)] for y in ys}
+        return {"tax_years": ys, "tax_status": taxreturn.STATUS, "tax_expenses": taxreturn.EXPENSES,
+                "tax_def": tax_defaults(m), "tax_forms": forms}
+    except Exception as ex:
+        print(f"[itin] 1040-NR section unavailable: {ex}", flush=True)
+        return {"tax_years": [], "tax_status": {}, "tax_expenses": [], "tax_def": {}, "tax_forms": {}}
+
+
 def _track_url(carrier, number):
     try:
         import tracking
@@ -1445,7 +1457,7 @@ def itin_job(job):
                                   base_url=(request.headers.get("X-Forwarded-Proto") or request.scheme).split(",")[0] + "://" + request.host,
                                   addr=IRS_ADDR, outcomes=OUTCOMES, support=support_doc(m["a"]), phone=IRS_STATUS_PHONE,
                                   today=dt.date.today().isoformat(), ptin_msg=ptin_alert(load_caa()), stages=STAGES,
-                                  delete_block=can_delete(m), track_url=_track_url)
+                                  delete_block=can_delete(m), track_url=_track_url, **_tax_ctx(m))
 
 
 @bp.post("/itin/job/<job>/upload")
@@ -1712,6 +1724,105 @@ def signed_coa_for(m: dict) -> bytes:
     return fill_irs(TPL_DIR / "fw7coa.pdf", coa_values(a, load_caa()), keep_pages=1)
 
 
+# ----------------------------------------------------------------------------- 1040-NR (v42a, taxreturn.py)
+
+TAX_KEYS = ("year", "status", "digital", "occupation", "phone", "email", "addr_street", "addr_city", "addr_province",
+            "addr_postal", "addr_country", "llc_name", "llc_ein", "llc_state", "llc_street", "llc_city_state_zip",
+            "llc_formed", "llc_activity", "llc_naics", "gross", "returns", "cogs")
+
+
+def tax_defaults(m: dict) -> dict:
+    """Prefill the 1040-NR form from the W-7 application (only for fields not saved yet)."""
+    a, k = m.get("a") or {}, m.get("kyc") or {}
+    eng = (m.get("engage") or {}).get("signed") or {}
+    f2 = [x.strip() for x in (a.get("foreign_2") or a.get("mail_2") or "").split(",") if x.strip()]
+    country, city, prov, postal = (f2[-1] if f2 else ""), (f2[0] if len(f2) > 1 else ""), "", ""
+    if len(f2) > 2:
+        prov = f2[1]
+    mpost = re.search(r"\b([A-Z0-9]{3,5}[ -]?[A-Z0-9]{0,4})\b\s*$", country.upper()) if country else None
+    if mpost and any(ch.isdigit() for ch in mpost.group(1)):
+        postal = mpost.group(1).strip()
+        country = country[: mpost.start()].strip(" ,")
+    try:
+        import taxreturn
+        years = taxreturn.years_available()
+    except Exception:
+        years = []
+    return {"year": str(years[-1]) if years else "2025", "status": "single", "digital": "no", "occupation": "",
+            "phone": a.get("phone") or eng.get("phone", ""), "email": k.get("email") or eng.get("email", ""),
+            "addr_street": a.get("foreign_1") or a.get("mail_1", ""), "addr_city": city, "addr_province": prov,
+            "addr_postal": postal, "addr_country": short_country(country) if country else "", "nil": True}
+
+
+@bp.post("/itin/job/<job>/tax")
+def itin_tax(job):
+    """Save the 1040-NR details and (action=generate) prepare the return – stored as the 'tax_return' document."""
+    import taxreturn
+    d = _job_dir(job)
+    f = request.form
+    with _LOCK:
+        m = json.loads((d / "job.json").read_text())
+        t = {k: (f.get(k) or "").strip() for k in TAX_KEYS}
+        for k, _l, _fld in taxreturn.EXPENSES:
+            t[f"exp_{k}"] = (f.get(f"exp_{k}") or "").strip()
+        t["nil"] = f.get("nil") == "1"
+        t["confirm_nil"] = bool(f.get("confirm_nil"))
+        if t["status"] not in taxreturn.STATUS:
+            t["status"] = "single"
+        prev = m.get("tax") or {}
+        t["generated"] = prev.get("generated")
+        m["tax"] = t
+        errs = []
+        if f.get("action") == "generate":
+            try:
+                year = int(t["year"])
+            except ValueError:
+                year = 0
+            if year not in taxreturn.years_available():
+                errs.append(f"Tax year {t['year']} forms are not installed yet.")
+            if t["nil"] and not t["confirm_nil"]:
+                errs.append("Tick the box to confirm the client had no U.S. income for the year (nil return).")
+            if not t["nil"]:
+                if not (t["llc_name"] and t["llc_activity"]):
+                    errs.append("Enter the LLC name and what the business does (Schedule C, lines A and C).")
+                if taxreturn._n(t["gross"]) <= 0 and not any(taxreturn._n(t[f"exp_{k}"]) for k, _l, _f in taxreturn.EXPENSES):
+                    errs.append("Enter the LLC's U.S. income and expenses – or tick Nil return.")
+            if not t["occupation"]:
+                errs.append("Enter the client's occupation (signature section of the 1040-NR).")
+            if not (t["addr_street"] and t["addr_country"]):
+                errs.append("Enter the client's home address and country.")
+            miss = taxreturn.missing_templates(year, not t["nil"]) if year else []
+            hard = [x for x in miss if "Schedule OI" not in x]
+            if hard:
+                errs.append("These IRS forms are not installed yet for " + str(year) + ": " + ", ".join(hard) + ".")
+            if not errs:
+                try:
+                    pdf, c, included = taxreturn.build(m["a"], load_caa(), t, fill_irs)
+                except Exception as ex:
+                    errs.append(f"Could not prepare the return: {ex}")
+                else:
+                    tag = _safe(f"{m['a']['last']}_{m['a']['first']}")
+                    fname = f"tax_return_1040NR_{year}_{tag}.pdf"
+                    m["files"] = [x for x in m["files"] if not (x.get("kind") == "tax_return" and x.get("generated"))]
+                    (d / fname).write_bytes(pdf)
+                    m["files"].append({"file": fname, "label": f"Form 1040-NR {year} ({'nil return' if c['nil'] else 'prepared'})",
+                                       "kind": "tax_return", "orig": "Prepared by us", "generated": True})
+                    t["generated"] = {"when": dt.datetime.now().isoformat(timespec="seconds"), "file": fname,
+                                      "forms": included, "tax": c.get("tax", 0), "net": c.get("net", 0),
+                                      "warnings": c["warnings"] + ([f"Schedule OI ({year}) still has to be attached – not installed yet."]
+                                                                   if any("Schedule OI" in x for x in miss) else []),
+                                      "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin")}
+        (d / "job.json").write_text(json.dumps(m, indent=1))
+    _ALERT_CACHE["at"] = 0
+    for e in errs:
+        flash("⚠ " + e)
+    if f.get("action") == "generate" and not errs:
+        flash("✔ 1040-NR prepared and added to the documents (US federal tax return) and printing pack 1.")
+    elif not errs:
+        flash("1040-NR details saved.")
+    return redirect(f"/itin/job/{job}#taxret")
+
+
 @bp.post("/itin/caa/signature")
 def itin_rp_signature():
     """v38q – responsible party's signature (photo/scan) for the Acceptance Agent box of the signed W-7."""
@@ -1782,7 +1893,7 @@ def itin_zip(job):
 
 
 # v38p – two printing packs (user's choice of contents and order)
-#   1: W-7 with client signature, W-7-COA, passport     2: engagement form (signed online), W-7
+#   1: W-7 with client signature, W-7-COA, passport (+ 1040-NR, v42a)     2: engagement form (signed online), W-7
 PACKS = {1: "Printing pack 1 – signed W-7, COA, passport", 2: "Printing pack 2 – engagement form, W-7"}
 
 
@@ -1806,6 +1917,11 @@ def pack_files(d: Path, meta: dict, n: int) -> list[tuple[str, bytes]]:
             out.append((f"3_{f}" if len(pp) == 1 else f"3{chr(96 + i)}_{f}", (d / f).read_bytes()))
         if not pp:
             missing.append("the passport")
+        tr = [x["file"] for x in files if x.get("kind") == "tax_return"]
+        for i, f in enumerate(tr, 1):
+            out.append((f"4_{f}" if len(tr) == 1 else f"4{chr(96 + i)}_{f}", (d / f).read_bytes()))
+        if not tr and doc_rules(meta["a"]).get("tax_return", ("na",))[0] in ("req", "cond"):
+            missing.append("the 1040-NR tax return")
     else:
         eng = [x["file"] for x in files if x.get("kind") == "engagement"]
         for i, f in enumerate(eng, 1):
@@ -2496,7 +2612,7 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
  {% if m.a.client_ref %}<div><b>Reference</b>{{m.a.client_ref}}</div>{% endif %}
 </div>
 <div class="btnrow" style="margin-top:14px"><a class="btn" href="/itin/job/{{m.job}}/zip">⬇ Download all ({{m.files|length + (1 if m.signature else 0)}}) as ZIP</a>
-<a class="btn" href="/itin/job/{{m.job}}/pack/1" title="W-7 with client signature, W-7-COA, passport">🖨 Printing pack 1 (ZIP)</a>
+<a class="btn" href="/itin/job/{{m.job}}/pack/1" title="W-7 with client signature, W-7-COA, passport, 1040-NR">🖨 Printing pack 1 (ZIP)</a>
 <a class="btn" href="/itin/job/{{m.job}}/pack/2" title="Engagement form (signed online), W-7">🖨 Printing pack 2 (ZIP)</a>
 {% set w7f = [] %}{% for x in m.files if x.file.startswith('W-7_') %}{% if w7f.append(x) %}{% endif %}{% endfor %}{% if w7f %}<a class="btn secondary" href="/itin/job/{{m.job}}/file/{{w7f[0].file}}?inline=1" target="_blank">🖨 Print W-7 (for signing / IRS)</a>
 <a class="btn secondary" href="/itin/job/{{m.job}}/customer-copy.pdf?inline=1" target="_blank">🧾 Customer copy (our details masked)</a>{% if m.signature %}
@@ -2504,7 +2620,7 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
 <a class="btn secondary" href="/itin">New application</a></div>
 {% if request.args.get('pack') in ('1','2') and request.args.get('missing') %}<div id="packs" class="warn" style="margin-top:10px">⚠ <b>Printing pack {{request.args.pack}}</b> is missing {{request.args.missing}}.
 Add it first, or <a href="/itin/job/{{m.job}}/pack/{{request.args.pack}}?anyway=1"><b>download the pack without it</b></a>.</div>{% endif %}
-<p class="muted" style="margin:6px 0 0"><b>Printing pack 1:</b> W-7 with client signature · W-7-COA · Passport &nbsp;|&nbsp; <b>Printing pack 2:</b> Engagement form (signed online) · W-7{% if not m.signature %} &nbsp;– <span style="color:#b45309">pack 1 needs the client signature uploaded first</span>{% endif %}</p>
+<p class="muted" style="margin:6px 0 0"><b>Printing pack 1:</b> W-7 with client signature · W-7-COA · Passport{% if rules.tax_return[0] in ('req','cond') or m.tax %} · 1040-NR{% endif %} &nbsp;|&nbsp; <b>Printing pack 2:</b> Engagement form (signed online) · W-7{% if not m.signature %} &nbsp;– <span style="color:#b45309">pack 1 needs the client signature uploaded first</span>{% endif %}</p>
 <p class="muted">Before sending to the IRS: check every field against the documents; the applicant signs and dates the W-7;
 our responsible party signs and dates the Acceptance Agent box and the Certificate of Accuracy; attach the copy of the
 identity document and the tax return (or exception documents) as required by the reason boxes ticked.</p></div>
@@ -2625,6 +2741,61 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 {% if m.history %}<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">History</summary><ul>{% for h in m.history %}<li>{{h.when|ukdate}} – {{stages.get(h.stage, h.stage)}} ({{h.staff}})</li>{% endfor %}</ul></details>{% endif %}
 </div>
 
+{% endif %}
+{% if m.status not in ('kyc_sent', 'kyc_received') and (rules.tax_return[0] in ('req','cond') or m.tax) %}{% set tx = m.tax or tax_def %}{% set g = (m.tax or {}).generated %}
+<div class="card" id="taxret"><h2 style="margin-top:0">📄 1040-NR tax return <span class="muted" style="font-size:14px;font-weight:400">– needed because of the reason box ticked on the W-7</span></h2>
+{% if g %}<div class="okb">✔ Prepared {{g.when|ukdate}} by {{g.staff}}: <a href="/itin/job/{{m.job}}/file/{{g.file}}?inline=1" target="_blank"><b>{{g.file}}</b></a>
+ – {{ g.forms|join(', ') }}.{% if g.tax %} Tax due <b>${{ '{:,}'.format(g.tax) }}</b>.{% endif %} It is in the Documents list and printing pack 1.</div>
+{% for w in g.warnings %}<div class="warn">⚠ {{w}}</div>{% endfor %}{% endif %}
+<div class="warn" style="font-size:13px"><b>Before preparing:</b> a nil return is only correct if the client had <b>no U.S. income</b> for the year. A foreign owner of a
+U.S. LLC with no U.S. trade or business income usually has no 1040-NR filing requirement, so the IRS may reject a W-7 sent with a nil return –
+check the reason box / exception first. If the LLC had U.S. income, untick Nil and enter it. The client signs and dates the 1040-NR in ink; the identifying number is left blank (ITIN applied for).</div>
+{% if not tax_years %}<div class="bad">No 1040-NR forms are installed on the server yet.</div>{% endif %}
+<form method="post" action="/itin/job/{{m.job}}/tax">
+<div class="fgrid">
+ <div><label>Tax year</label><select name="year">{% for y in tax_years %}<option {% if tx.year|string == y|string %}selected{% endif %}>{{y}}</option>{% endfor %}</select></div>
+ <div><label>Filing status</label><select name="status">{% for k, v in tax_status.items() %}<option value="{{k}}" {% if tx.status == k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></div>
+ <div><label>Digital assets (crypto) received or sold in the year?</label><select name="digital"><option value="no">No</option><option value="yes" {% if tx.digital == 'yes' %}selected{% endif %}>Yes</option></select></div>
+ <div><label>Occupation (signature section)</label><input type="text" name="occupation" value="{{tx.occupation}}" placeholder="e.g. Business owner"></div>
+ <div><label>Phone</label><input type="text" name="phone" value="{{tx.phone}}"></div>
+ <div><label>Email</label><input type="text" name="email" value="{{tx.email}}"></div>
+</div>
+<p style="margin:12px 0 2px"><b>Client's home address</b> <span class="muted">(foreign address on the 1040-NR)</span></p>
+<div class="fgrid">
+ <div><label>Street</label><input type="text" name="addr_street" value="{{tx.addr_street}}"></div>
+ <div><label>City</label><input type="text" name="addr_city" value="{{tx.addr_city}}"></div>
+ <div><label>Province / state / county</label><input type="text" name="addr_province" value="{{tx.addr_province}}"></div>
+ <div><label>Postal code</label><input type="text" name="addr_postal" value="{{tx.addr_postal}}"></div>
+ <div><label>Country</label><input type="text" name="addr_country" value="{{tx.addr_country}}"></div>
+</div>
+<label class="tick" style="margin-top:12px"><input type="radio" name="nil" value="1" {% if tx.nil %}checked{% endif %} onchange="taxMode()"> <span><b>Nil return</b> – the client had no U.S. income in this tax year</span></label>
+<div id="nilbox" class="sub"><label class="tick" style="font-weight:400"><input type="checkbox" name="confirm_nil" value="1" {% if tx.confirm_nil %}checked{% endif %}> I have confirmed with the client that they (and their LLC) had no U.S. income, wages or withholding in this tax year</label></div>
+<label class="tick"><input type="radio" name="nil" value="0" {% if not tx.nil %}checked{% endif %} onchange="taxMode()"> <span><b>The client's U.S. LLC had income</b> – prepare Schedule C, Schedule 1 and Form 8995 and work out the tax</span></label>
+<div id="incbox" style="margin-left:26px">
+<div class="fgrid">
+ <div><label>LLC name</label><input type="text" name="llc_name" value="{{tx.llc_name}}"></div>
+ <div><label>LLC EIN</label><input type="text" name="llc_ein" value="{{tx.llc_ein}}" placeholder="12-3456789"></div>
+ <div><label>What the business does (line A)</label><input type="text" name="llc_activity" value="{{tx.llc_activity}}" placeholder="e.g. Online retail – clothing"></div>
+ <div><label>Business code (line B, 6 digits – see Schedule C instructions)</label><input type="text" name="llc_naics" value="{{tx.llc_naics}}" placeholder="e.g. 454110"></div>
+ <div><label>LLC street address</label><input type="text" name="llc_street" value="{{tx.llc_street}}"></div>
+ <div><label>LLC city, state, ZIP</label><input type="text" name="llc_city_state_zip" value="{{tx.llc_city_state_zip}}"></div>
+ <div><label>State formed</label><input type="text" name="llc_state" value="{{tx.llc_state}}" placeholder="e.g. Wyoming"></div>
+ <div><label>Date formed</label><input type="date" name="llc_formed" value="{{tx.llc_formed}}"></div>
+</div>
+<p style="margin:12px 0 2px"><b>U.S. income and expenses for the year (whole US dollars)</b></p>
+<div class="fgrid">
+ <div><label>Gross receipts / sales (line 1)</label><input type="text" name="gross" value="{{tx.gross}}"></div>
+ <div><label>Returns and allowances (line 2)</label><input type="text" name="returns" value="{{tx.returns}}"></div>
+ <div><label>Cost of goods sold (line 4)</label><input type="text" name="cogs" value="{{tx.cogs}}"></div>
+ {% for k, lbl, _f in tax_expenses %}<div><label>{{lbl}}</label><input type="text" name="exp_{{k}}" value="{{tx['exp_' ~ k] if tx['exp_' ~ k] is defined else ''}}"></div>{% endfor %}
+</div></div>
+<div class="btnrow" style="margin-top:12px"><button class="btn secondary" type="submit" name="action" value="save">Save details</button>
+<button class="btn" type="submit" name="action" value="generate" {% if not tax_years %}disabled{% endif %}>📄 Prepare 1040-NR</button></div>
+</form>
+<p class="muted" style="font-size:13px;margin-bottom:0">Forms installed: {% for y, fl in tax_forms.items() %}{{y}} – {{ fl|join(', ') }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}.
+Non-resident aliens are not liable for self-employment tax; no standard deduction. Check the return before the client signs.</p>
+</div>
+<script>function taxMode(){var n=document.querySelector('[name=nil][value="1"]').checked;document.getElementById('nilbox').style.display=n?'':'none';document.getElementById('incbox').style.display=n?'none':''}taxMode();</script>
 {% endif %}
 {% if m.status not in ('kyc_sent', 'kyc_received') %}<div class="card" id="signature"><h2 style="margin-top:0">✍ Client signature</h2>
 <p class="muted" style="margin-top:0">Upload the photo or scan of the signature the client sent. It is cleaned up (paper background removed) and placed in the
