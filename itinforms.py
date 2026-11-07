@@ -1691,6 +1691,27 @@ def itin_signature(job):
     return redirect(f"/itin/job/{job}#signature")
 
 
+def _signed_dates(m: dict) -> dict:
+    """v38r – signing dates for the signed copies: the dates entered under A (Client consent & signatures),
+    whether or not the 'signed' boxes are ticked; falls back to the dates already on the application."""
+    t, sd = m.get("track") or {}, (m.get("a") or {}).get("sign_dates") or {}
+    return {"applicant": t.get("applicant_signed_date") or sd.get("applicant", ""),
+            "rp": t.get("rp_signed_date") or sd.get("rp", "")}
+
+
+def signed_w7_for(d: Path, m: dict) -> bytes:
+    """W-7 with client signature (+ responsible party signature), with the signing dates from A."""
+    a = dict(m["a"], sign_dates=_signed_dates(m))
+    w7 = stamp_w7_dates(fill_irs(TPL_DIR / "fw7.pdf", w7_values(a, load_caa()), overlays=w7_overlays(a)), a)
+    return signed_w7_pdf(w7, (d / SIG_FILE).read_bytes())
+
+
+def signed_coa_for(m: dict) -> bytes:
+    """W-7-COA for printing pack 1, dated with the responsible party's signing date from A."""
+    a = dict(m["a"], sign_dates=_signed_dates(m))
+    return fill_irs(TPL_DIR / "fw7coa.pdf", coa_values(a, load_caa()), keep_pages=1)
+
+
 @bp.post("/itin/caa/signature")
 def itin_rp_signature():
     """v38q – responsible party's signature (photo/scan) for the Acceptance Agent box of the signed W-7."""
@@ -1726,7 +1747,7 @@ def itin_w7_signed(job):
     w7 = next((x["file"] for x in m.get("files", []) if x["file"].startswith("W-7_") and not x.get("kind")), None)
     if not w7 or not (d / SIG_FILE).exists():
         abort(404)
-    pdf = signed_w7_pdf((d / w7).read_bytes(), (d / SIG_FILE).read_bytes())
+    pdf = signed_w7_for(d, m)
     return send_file(io.BytesIO(pdf), mimetype="application/pdf", as_attachment=request.args.get("inline") != "1",
                      download_name=f"W-7_signed_{_safe(m['applicant'])}.pdf")
 
@@ -1749,7 +1770,7 @@ def itin_zip(job):
             z.write(d / x["file"], x["file"])
             if x["file"].startswith("W-7_") and not x.get("kind") and (d / SIG_FILE).exists():   # v38n
                 try:
-                    z.writestr("W-7_signed_" + x["file"][4:], signed_w7_pdf((d / x["file"]).read_bytes(), (d / SIG_FILE).read_bytes()))
+                    z.writestr("W-7_signed_" + x["file"][4:], signed_w7_for(d, meta))
                 except Exception as ex:
                     print(f"[itin] signed W-7 not added to ZIP: {ex}", flush=True)
         for x in meta.get("slips", []):
@@ -1773,11 +1794,11 @@ def pack_files(d: Path, meta: dict, n: int) -> list[tuple[str, bytes]]:
     out, missing = [], []
     if n == 1:
         if w7 and (d / SIG_FILE).exists():
-            out.append(("1_W-7_signed_" + w7[4:], signed_w7_pdf((d / w7).read_bytes(), (d / SIG_FILE).read_bytes())))
+            out.append(("1_W-7_signed_" + w7[4:], signed_w7_for(d, meta)))
         else:
             missing.append("the client signature (upload it under Client signature)" if w7 else "the W-7")
         if coa:
-            out.append(("2_" + coa, (d / coa).read_bytes()))
+            out.append(("2_" + coa, signed_coa_for(meta)))
         else:
             missing.append("the Certificate of Accuracy")
         pp = [x["file"] for x in files if x.get("kind") == "passport"]
