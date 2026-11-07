@@ -1433,10 +1433,10 @@ def _tax_ctx(m):
         ys = taxreturn.years_available()
         forms = {y: [lbl for k, (lbl, _s, _q) in taxreturn.FORMS.items() if taxreturn.template(k, y)] for y in ys}
         return {"tax_years": ys, "tax_status": taxreturn.STATUS, "tax_expenses": taxreturn.EXPENSES,
-                "tax_def": tax_defaults(m), "tax_forms": forms}
+                "tax_def": tax_defaults(m), "tax_view": tax_view(m), "tax_forms": forms}
     except Exception as ex:
         print(f"[itin] 1040-NR section unavailable: {ex}", flush=True)
-        return {"tax_years": [], "tax_status": {}, "tax_expenses": [], "tax_def": {}, "tax_forms": {}}
+        return {"tax_years": [], "tax_status": {}, "tax_expenses": [], "tax_def": {}, "tax_view": {}, "tax_forms": {}}
 
 
 def _track_url(carrier, number):
@@ -1746,7 +1746,7 @@ def signed_coa_for(m: dict) -> bytes:
 
 # ----------------------------------------------------------------------------- 1040-NR (v42a, taxreturn.py)
 
-TAX_KEYS = ("year", "status", "digital", "occupation", "phone", "email", "prepared_by", "addr_street", "addr_city", "addr_province",
+TAX_KEYS = ("year", "status", "digital", "occupation", "phone", "email", "prepared_by", "mode", "addr_street", "addr_city", "addr_province",
             "addr_postal", "addr_country", "llc_name", "llc_ein", "llc_state", "llc_street", "llc_city_state_zip",
             "llc_formed", "llc_activity", "llc_naics", "gross", "returns", "cogs", "exp_other_desc",
             "oi_citizen", "oi_residence", "oi_visa", "oi_visa_changed", "oi_visa_change_text", "oi_trips",
@@ -1774,10 +1774,26 @@ def tax_defaults(m: dict) -> dict:
             "phone": "", "email": "", "prepared_by": "client",          # v42d: client's own contact details, typed by staff
             "addr_street": a.get("foreign_1") or a.get("mail_1", ""), "addr_city": city, "addr_province": prov,
             "addr_postal": postal, "addr_country": short_country(country) if country else "", "nil": True,
-            "oi_citizen": short_country(a.get("citizenship", "")) if a.get("citizenship") else "",
+            "oi_citizen": short_country(a.get("citizenship") or a.get("id_issued_by") or ""),
             "oi_residence": short_country(country) if country else "",
             "oi_visa": a.get("visa") or "NOT APPLICABLE", "oi_visa_changed": "no", "oi_prior": "no",
             "oi_days_2023": "0", "oi_days_2024": "0", "oi_days_2025": "0" if not a.get("us_entry") else ""}
+
+
+OUR_DOMAINS = ("startitup.global",)
+
+
+def tax_view(m: dict) -> dict:
+    """v42g – saved 1040-NR details on top of the defaults: a box saved empty (e.g. before Schedule OI existed)
+    still shows the default. Our own email (from the KYC link) is never shown as the client's."""
+    t = dict(tax_defaults(m))
+    saved = m.get("tax") or {}
+    for k, v in saved.items():
+        if v not in ("", None) or k in ("phone", "email", "nil", "confirm_nil"):
+            t[k] = v
+    if any((t.get("email") or "").lower().endswith("@" + d) for d in OUR_DOMAINS):
+        t["email"] = ""
+    return t
 
 
 @bp.post("/itin/job/<job>/tax")
@@ -1792,7 +1808,17 @@ def itin_tax(job):
         t["occupation"] = t["occupation"] or "Business owner"          # v42c default
         for k, _l, _fld in taxreturn.EXPENSES:
             t[f"exp_{k}"] = (f.get(f"exp_{k}") or "").strip()
+        dflt = tax_defaults(m)
+        for k in ("oi_citizen", "oi_residence", "oi_visa", "oi_days_2023", "oi_days_2024", "oi_days_2025", "occupation"):
+            if not t.get(k):
+                t[k] = dflt.get(k, "")
+        if any((t.get("email") or "").lower().endswith("@" + dd) for dd in OUR_DOMAINS):
+            t["email"] = ""
         t["nil"] = f.get("nil") == "1"
+        if t.get("mode") in ("nil", "expenses", "income"):
+            t["nil"] = t["mode"] == "nil"
+            if t["mode"] == "expenses":                     # LLC with expenses only – no income lines
+                t["gross"] = t["returns"] = t["cogs"] = ""
         t["confirm_nil"] = bool(f.get("confirm_nil"))
         if t["status"] not in taxreturn.STATUS:
             t["status"] = "single"
@@ -1813,7 +1839,7 @@ def itin_tax(job):
                 if not (t["llc_name"] and t["llc_activity"]):
                     errs.append("Enter the LLC name and what the business does (Schedule C, lines A and C).")
                 if taxreturn._n(t["gross"]) <= 0 and not any(taxreturn._n(t[f"exp_{k}"]) for k, _l, _f in taxreturn.EXPENSES):
-                    errs.append("Enter the LLC's U.S. income and expenses – or tick Nil return.")
+                    errs.append("Enter the LLC's expenses actually paid (and income, if any) – or choose option 1 (nil return).")
                 if not t["llc_ein"]:
                     errs.append("Enter the LLC's EIN (Schedule C line D).")
             if not t["occupation"]:
@@ -2778,7 +2804,7 @@ Agent box on the W-7 and the Certificate of Accuracy in ink too.</div>
 </div>
 
 {% endif %}
-{% if m.status not in ('kyc_sent', 'kyc_received') and (rules.tax_return[0] in ('req','cond') or m.tax) %}{% set tx = m.tax or tax_def %}{% set g = (m.tax or {}).generated %}
+{% if m.status not in ('kyc_sent', 'kyc_received') and (rules.tax_return[0] in ('req','cond') or m.tax) %}{% set tx = tax_view %}{% set g = (m.tax or {}).generated %}
 <div class="card" id="taxret"><h2 style="margin-top:0">📄 1040-NR tax return <span class="muted" style="font-size:14px;font-weight:400">– needed because of the reason box ticked on the W-7</span></h2>
 {% if g %}<div class="okb">✔ Prepared {{g.when|ukdate}} by {{g.staff}}: <a href="/itin/job/{{m.job}}/file/{{g.file}}?inline=1" target="_blank"><b>{{g.file}}</b></a>
  – {{ g.forms|join(', ') }}.{% if g.tax %} Tax due <b>${{ '{:,}'.format(g.tax) }}</b>.{% endif %} It is in the Documents list and printing pack 1.</div>
@@ -2822,9 +2848,16 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
 </div>
 <label style="margin-top:6px">G. Visits to the US during the tax year – one per line: date entered – date departed (day/month/year)</label>
 <textarea name="oi_trips" rows="2" style="width:100%" placeholder="e.g. 14/03/2025 - 20/03/2025">{{tx.oi_trips}}</textarea>
-<label class="tick" style="margin-top:12px"><input type="radio" name="nil" value="1" {% if tx.nil %}checked{% endif %} onchange="taxMode()"> <span><b>Nil return</b> – the client had no U.S. income in this tax year</span></label>
-<div id="nilbox" class="sub"><label class="tick" style="font-weight:400"><input type="checkbox" name="confirm_nil" value="1" {% if tx.confirm_nil %}checked{% endif %}> I have confirmed with the client that they (and their LLC) had no U.S. income, wages or withholding in this tax year</label></div>
-<label class="tick"><input type="radio" name="nil" value="0" {% if not tx.nil %}checked{% endif %} onchange="taxMode()"> <span><b>The client's U.S. LLC had income or expenses</b> – the LLC is reported on Schedule C (with Schedule 1 and Form 8995) and the tax is worked out. Use this also when the LLC had <b>no income but real expenses</b> (e.g. registered agent, state fee) – a loss is shown.</span></label>
+<div style="margin-top:14px;padding:12px 14px;border:2px solid #111;border-radius:10px;background:#fafafa">
+<p style="margin:0 0 6px;font-size:15px"><b>What does the client have in the U.S.?</b> – choose one</p>
+{% set md = tx.mode or ('nil' if tx.nil else ('income' if (tx.gross|string|replace(',','')|trim) not in ('', '0') else 'expenses')) %}
+<input type="hidden" name="nil" id="nilval" value="{{ '1' if md == 'nil' else '0' }}">
+<label class="tick"><input type="radio" name="mode" value="nil" {% if md == 'nil' %}checked{% endif %} onchange="taxMode()"> <span><b>1. No U.S. LLC and no U.S. income</b> – nil return</span></label>
+<label class="tick"><input type="radio" name="mode" value="expenses" {% if md == 'expenses' %}checked{% endif %} onchange="taxMode()"> <span><b>2. Has a U.S. LLC – no income, only expenses</b> (e.g. registered agent, state fee, accountant) – shows a small loss</span></label>
+<label class="tick"><input type="radio" name="mode" value="income" {% if md == 'income' %}checked{% endif %} onchange="taxMode()"> <span><b>3. Has a U.S. LLC with income</b> – profit or loss is worked out and the tax calculated</span></label>
+<div id="formslist" class="muted" style="margin:6px 0 0 26px;font-size:13px"></div>
+</div>
+<div id="nilbox" class="sub"><label class="tick" style="font-weight:400"><input type="checkbox" name="confirm_nil" value="1" {% if tx.confirm_nil %}checked{% endif %}> I have confirmed with the client that they (and any LLC) had no U.S. income, wages or withholding in this tax year</label></div>
 <div id="incbox" style="margin-left:26px">
 <div class="fgrid">
  <div><label>LLC name</label><input type="text" name="llc_name" value="{{tx.llc_name}}"></div>
@@ -2836,11 +2869,11 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>State formed</label><input type="text" name="llc_state" value="{{tx.llc_state}}" placeholder="e.g. Wyoming"></div>
  <div><label>Date formed</label><input type="date" name="llc_formed" value="{{tx.llc_formed}}"></div>
 </div>
-<p style="margin:12px 0 2px"><b>U.S. income and expenses for the year (whole US dollars)</b></p>
+<p style="margin:12px 0 2px"><b>U.S. <span class="incpart">income and </span>expenses for the year (whole US dollars)</b></p>
 <div class="fgrid">
- <div><label>Gross receipts / sales (line 1)</label><input type="text" name="gross" value="{{tx.gross}}"></div>
- <div><label>Returns and allowances (line 2)</label><input type="text" name="returns" value="{{tx.returns}}"></div>
- <div><label>Cost of goods sold (line 4)</label><input type="text" name="cogs" value="{{tx.cogs}}"></div>
+ <div class="incpart"><label>Gross receipts / sales (line 1)</label><input type="text" name="gross" value="{{tx.gross}}"></div>
+ <div class="incpart"><label>Returns and allowances (line 2)</label><input type="text" name="returns" value="{{tx.returns}}"></div>
+ <div class="incpart"><label>Cost of goods sold (line 4)</label><input type="text" name="cogs" value="{{tx.cogs}}"></div>
  {% for k, lbl, _f in tax_expenses %}<div><label>{{lbl}}</label><input type="text" name="exp_{{k}}" value="{{tx['exp_' ~ k] if tx['exp_' ~ k] is defined else ''}}"></div>{% endfor %}
  <div><label>Other expenses – description (Part V)</label><input type="text" name="exp_other_desc" value="{{tx.exp_other_desc}}" placeholder="e.g. Bank charges"></div>
 </div><p class="muted" style="font-size:12px;margin:4px 0 0">Enter only expenses the LLC actually paid in the year – keep the receipts.</p></div>
@@ -2853,17 +2886,27 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
 Non-resident aliens are not liable for self-employment tax; no standard deduction. Check the return before the client signs.</p>
 </div>
 <script>function taxCheck(){
-  var q=function(n){return document.querySelector('#taxret [name='+n+']')}, e=[], nil=q('nil').checked;
+  var q=function(n){return document.querySelector('#taxret [name='+n+']')}, e=[], nil=(q('nil').value=='1');
   if(!q('occupation').value.trim()) e.push("Enter the client's occupation (signature section of the 1040-NR).");
   if(!q('addr_street').value.trim() || !q('addr_country').value.trim()) e.push("Enter the client's home address and country.");
   if(nil && !q('confirm_nil').checked) e.push("Tick the box to confirm the client had no U.S. income (nil return).");
-  if(!nil && (!q('llc_name').value.trim() || !q('llc_activity').value.trim())) e.push("Enter the LLC name and what the business does.");
+  if(!nil && (!q('llc_name').value.trim() || !q('llc_activity').value.trim() || !q('llc_ein').value.trim())) e.push("Enter the LLC name, its EIN and what the business does.");
   var box=document.getElementById('taxjs');
   if(e.length){ box.innerHTML='<b>Please fix before preparing:</b><ul style="margin:4px 0 0 18px;padding:0"><li>'+e.join('</li><li>')+'</li></ul>'; box.style.display='';
     if(!q('occupation').value.trim()) q('occupation').focus(); return false }
   box.style.display='none'; return true;
 }
-function taxMode(){var n=document.querySelector('[name=nil][value="1"]').checked;document.getElementById('nilbox').style.display=n?'':'none';document.getElementById('incbox').style.display=n?'none':''}taxMode();</script>
+function taxMode(){
+  var r=document.querySelector('#taxret [name=mode]:checked'), md=r?r.value:'nil', n=(md=='nil');
+  document.getElementById('nilval').value=n?'1':'0';
+  document.getElementById('nilbox').style.display=n?'':'none';
+  document.getElementById('incbox').style.display=n?'none':'';
+  document.querySelectorAll('#taxret .incpart').forEach(function(e){e.style.display=(md=='income')?'':'none'});
+  var firm=document.querySelector('#taxret [name=prepared_by]').value=='firm';
+  var f=['Form 1040-NR','Schedule OI'].concat(n?[]:['Schedule 1','Schedule C (the LLC)','Form 8995']).concat(firm?['Form 8948']:[]);
+  document.getElementById('formslist').innerHTML='Forms that will be prepared: <b>'+f.join(' · ')+'</b>';
+}
+document.querySelector('#taxret [name=prepared_by]').addEventListener('change',taxMode);taxMode();</script>
 {% endif %}
 {% if m.status not in ('kyc_sent', 'kyc_received') %}<div class="card" id="signature"><h2 style="margin-top:0">✍ Client signature</h2>
 <p class="muted" style="margin-top:0">Upload the photo or scan of the signature the client sent. It is cleaned up (paper background removed) and placed in the
