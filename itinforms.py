@@ -1711,6 +1711,11 @@ def itin_zip(job):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for x in meta["files"]:
             z.write(d / x["file"], x["file"])
+            if x["file"].startswith("W-7_") and not x.get("kind") and (d / SIG_FILE).exists():   # v38n
+                try:
+                    z.writestr("W-7_signed_" + x["file"][4:], signed_w7_pdf((d / x["file"]).read_bytes(), (d / SIG_FILE).read_bytes()))
+                except Exception as ex:
+                    print(f"[itin] signed W-7 not added to ZIP: {ex}", flush=True)
         for x in meta.get("slips", []):
             if (d / "slips" / x["file"]).exists():
                 z.write(d / "slips" / x["file"], "tracking_slips/" + x["file"])
@@ -2361,7 +2366,7 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
  <div><b>Document</b>{{m.a.id_type|upper}} {{m.a.id_number}} ({{m.a.id_issued_by}}), expires {{m.a.id_expiry|ukdate}}</div>
  {% if m.a.client_ref %}<div><b>Reference</b>{{m.a.client_ref}}</div>{% endif %}
 </div>
-<div class="btnrow" style="margin-top:14px"><a class="btn" href="/itin/job/{{m.job}}/zip">⬇ Download all ({{m.files|length}}) as ZIP</a>
+<div class="btnrow" style="margin-top:14px"><a class="btn" href="/itin/job/{{m.job}}/zip">⬇ Download all ({{m.files|length + (1 if m.signature else 0)}}) as ZIP</a>
 {% set w7f = [] %}{% for x in m.files if x.file.startswith('W-7_') %}{% if w7f.append(x) %}{% endif %}{% endfor %}{% if w7f %}<a class="btn secondary" href="/itin/job/{{m.job}}/file/{{w7f[0].file}}?inline=1" target="_blank">🖨 Print W-7 (for signing / IRS)</a>
 <a class="btn secondary" href="/itin/job/{{m.job}}/customer-copy.pdf?inline=1" target="_blank">🧾 Customer copy (our details masked)</a>{% if m.signature %}
 <a class="btn secondary" href="/itin/job/{{m.job}}/w7-signed.pdf?inline=1" target="_blank">📄 W-7 with client signature</a>{% endif %}{% endif %}
@@ -2517,16 +2522,20 @@ applicant signature box of a separate <b>W-7 with client signature</b> download 
 </div>
 
 <div class="doclist">
-<div>{% for x in m.files %}<div class="ditem{% if loop.first %} on{% endif %}" data-f="{{x.file}}" onclick="show(this)">
+<div>{% set ns = namespace(sig_done=false) %}{% for x in m.files %}<div class="ditem{% if loop.first %} on{% endif %}" data-f="{{x.file}}" onclick="show(this)">
 <b>{{x.label}}</b><span class="muted">{{x.file}}</span>
-<div style="margin-top:6px"><a class="btn small secondary" href="/itin/job/{{m.job}}/file/{{x.file}}" onclick="event.stopPropagation()">⬇ Download</a></div></div>{% endfor %}</div>
+<div style="margin-top:6px"><a class="btn small secondary" href="/itin/job/{{m.job}}/file/{{x.file}}" onclick="event.stopPropagation()">⬇ Download</a></div></div>
+{% if m.signature and not ns.sig_done and x.file.startswith('W-7_') and not x.kind %}{% set ns.sig_done = true %}<div class="ditem" data-u="/itin/job/{{m.job}}/w7-signed.pdf?inline=1" onclick="show(this)">
+<b>Form W-7 – with client signature</b><span class="muted">W-7_signed_{{x.file[4:]}}</span>
+<div style="margin-top:6px"><a class="btn small secondary" href="/itin/job/{{m.job}}/w7-signed.pdf" onclick="event.stopPropagation()">⬇ Download</a></div></div>{% endif %}{% endfor %}</div>
 <div id="pv"></div>
 </div>
 <script>
 var base = '/itin/job/{{m.job}}/file/';
 function show(el){
   document.querySelectorAll('.ditem').forEach(function(d){d.classList.remove('on')}); el.classList.add('on');
-  document.getElementById('pv').innerHTML = '<iframe src="'+base+encodeURIComponent(el.getAttribute('data-f'))+'?inline=1"></iframe>';
+  var u = el.getAttribute('data-u') || (base+encodeURIComponent(el.getAttribute('data-f'))+'?inline=1');
+  document.getElementById('pv').innerHTML = '<iframe src="'+u+'"></iframe>';
 }
 var first = document.querySelector('.ditem'); if(first) show(first);
 function readSlip(){
