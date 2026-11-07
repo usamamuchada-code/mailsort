@@ -1718,6 +1718,26 @@ def signed_w7_for(d: Path, m: dict) -> bytes:
     return signed_w7_pdf(w7, (d / SIG_FILE).read_bytes())
 
 
+NR_SIGN_BOX = (92.0, 676.0, 265.0, 695.5)     # 1040-NR page 2 "Your signature" (v42f)
+NR_DATE_AT = (273.0, 692.0)                      # 1040-NR page 2 "Date" column
+
+
+def signed_tax_for(d: Path, m: dict, fname: str) -> bytes:
+    """Prepared 1040-NR with the client's signature and the applicant signing date (section A) – printing pack 1."""
+    import pymupdf
+    doc = pymupdf.open(stream=(d / fname).read_bytes(), filetype="pdf")
+    if len(doc) > 1 and "1040-NR" in doc[1].get_text()[:80]:
+        pg = doc[1]
+        if (d / SIG_FILE).exists():
+            pg.insert_image(pymupdf.Rect(*NR_SIGN_BOX), stream=(d / SIG_FILE).read_bytes(), keep_proportion=True, overlay=True)
+        sd = _d(_signed_dates(m).get("applicant"))
+        if sd:
+            pg.insert_text(NR_DATE_AT, sd.strftime("%m/%d/%Y"), fontsize=9, fontname="helv", color=(0, 0, 0.55))
+    buf = io.BytesIO()
+    doc.save(buf, garbage=3, deflate=True)
+    return buf.getvalue()
+
+
 def signed_coa_for(m: dict) -> bytes:
     """W-7-COA for printing pack 1, dated with the responsible party's signing date from A."""
     a = dict(m["a"], sign_dates=_signed_dates(m))
@@ -1726,9 +1746,11 @@ def signed_coa_for(m: dict) -> bytes:
 
 # ----------------------------------------------------------------------------- 1040-NR (v42a, taxreturn.py)
 
-TAX_KEYS = ("year", "status", "digital", "occupation", "phone", "email", "addr_street", "addr_city", "addr_province",
+TAX_KEYS = ("year", "status", "digital", "occupation", "phone", "email", "prepared_by", "addr_street", "addr_city", "addr_province",
             "addr_postal", "addr_country", "llc_name", "llc_ein", "llc_state", "llc_street", "llc_city_state_zip",
-            "llc_formed", "llc_activity", "llc_naics", "gross", "returns", "cogs")
+            "llc_formed", "llc_activity", "llc_naics", "gross", "returns", "cogs", "exp_other_desc",
+            "oi_citizen", "oi_residence", "oi_visa", "oi_visa_changed", "oi_visa_change_text", "oi_trips",
+            "oi_days_2023", "oi_days_2024", "oi_days_2025", "oi_prior", "oi_prior_text")
 
 
 def tax_defaults(m: dict) -> dict:
@@ -1749,9 +1771,13 @@ def tax_defaults(m: dict) -> dict:
     except Exception:
         years = []
     return {"year": str(years[-1]) if years else "2025", "status": "single", "digital": "no", "occupation": "Business owner",
-            "phone": a.get("phone") or eng.get("phone", ""), "email": k.get("email") or eng.get("email", ""),
+            "phone": "", "email": "", "prepared_by": "client",          # v42d: client's own contact details, typed by staff
             "addr_street": a.get("foreign_1") or a.get("mail_1", ""), "addr_city": city, "addr_province": prov,
-            "addr_postal": postal, "addr_country": short_country(country) if country else "", "nil": True}
+            "addr_postal": postal, "addr_country": short_country(country) if country else "", "nil": True,
+            "oi_citizen": short_country(a.get("citizenship", "")) if a.get("citizenship") else "",
+            "oi_residence": short_country(country) if country else "",
+            "oi_visa": a.get("visa") or "NOT APPLICABLE", "oi_visa_changed": "no", "oi_prior": "no",
+            "oi_days_2023": "0", "oi_days_2024": "0", "oi_days_2025": "0" if not a.get("us_entry") else ""}
 
 
 @bp.post("/itin/job/<job>/tax")
@@ -1788,11 +1814,17 @@ def itin_tax(job):
                     errs.append("Enter the LLC name and what the business does (Schedule C, lines A and C).")
                 if taxreturn._n(t["gross"]) <= 0 and not any(taxreturn._n(t[f"exp_{k}"]) for k, _l, _f in taxreturn.EXPENSES):
                     errs.append("Enter the LLC's U.S. income and expenses – or tick Nil return.")
+                if not t["llc_ein"]:
+                    errs.append("Enter the LLC's EIN (Schedule C line D).")
             if not t["occupation"]:
                 errs.append("Enter the client's occupation (signature section of the 1040-NR).")
+            if not all(re.fullmatch(r"\d{1,3}", t[k] or "") for k in ("oi_days_2023", "oi_days_2024", "oi_days_2025")):
+                errs.append("Schedule OI item H: enter the number of days in the US for 2023, 2024 and 2025 (0 if none).")
+            if not (t["oi_citizen"] and t["oi_residence"]):
+                errs.append("Schedule OI items A and B: enter the country of citizenship and of tax residence.")
             if not (t["addr_street"] and t["addr_country"]):
                 errs.append("Enter the client's home address and country.")
-            miss = taxreturn.missing_templates(year, not t["nil"]) if year else []
+            miss = taxreturn.missing_templates(year, not t["nil"], t.get("prepared_by") == "firm") if year else []
             hard = [x for x in miss if "Schedule OI" not in x]
             if hard:
                 errs.append("These IRS forms are not installed yet for " + str(year) + ": " + ", ".join(hard) + ".")
@@ -1919,9 +1951,11 @@ def pack_files(d: Path, meta: dict, n: int) -> list[tuple[str, bytes]]:
             out.append((f"3_{f}" if len(pp) == 1 else f"3{chr(96 + i)}_{f}", (d / f).read_bytes()))
         if not pp:
             missing.append("the passport")
-        tr = [x["file"] for x in files if x.get("kind") == "tax_return"]
-        for i, f in enumerate(tr, 1):
-            out.append((f"4_{f}" if len(tr) == 1 else f"4{chr(96 + i)}_{f}", (d / f).read_bytes()))
+        tr = [x for x in files if x.get("kind") == "tax_return"]
+        for i, x in enumerate(tr, 1):
+            f = x["file"]
+            data = signed_tax_for(d, meta, f) if x.get("generated") else (d / f).read_bytes()   # v42f: client signs our 1040-NR
+            out.append((f"4_{f}" if len(tr) == 1 else f"4{chr(96 + i)}_{f}", data))
         if not tr and doc_rules(meta["a"]).get("tax_return", ("na",))[0] in ("req", "cond"):
             missing.append("the 1040-NR tax return")
     else:
@@ -2759,9 +2793,12 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>Filing status</label><select name="status">{% for k, v in tax_status.items() %}<option value="{{k}}" {% if tx.status == k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></div>
  <div><label>Digital assets (crypto) received or sold in the year?</label><select name="digital"><option value="no">No</option><option value="yes" {% if tx.digital == 'yes' %}selected{% endif %}>Yes</option></select></div>
  <div><label>Occupation (signature section) <span style="color:#b91c1c">*</span></label><input type="text" name="occupation" value="{{tx.occupation}}" placeholder="e.g. Business owner"></div>
- <div><label>Phone</label><input type="text" name="phone" value="{{tx.phone}}"></div>
- <div><label>Email</label><input type="text" name="email" value="{{tx.email}}"></div>
+ <div><label>Client's phone number</label><input type="text" name="phone" value="{{tx.phone}}" placeholder="e.g. +92 300 1234567"></div>
+ <div><label>Client's email</label><input type="email" name="email" value="{{tx.email}}" placeholder="client@example.com"></div>
+ <div><label>Prepared by</label><select name="prepared_by"><option value="client">Client (self-prepared) – paid preparer section left blank</option>
+  <option value="firm" {% if tx.prepared_by == 'firm' %}selected{% endif %}>Our firm (paid preparer) – Moaz, PTIN, firm details</option></select></div>
 </div>
+<p class="muted" style="font-size:12px;margin:4px 0 0">If we are paid to prepare the return, the law requires the paid preparer section (name, PTIN, signature) to be completed – choose "Our firm" then.</p>
 <p style="margin:12px 0 2px"><b>Client's home address</b> <span class="muted">(foreign address on the 1040-NR)</span></p>
 <div class="fgrid">
  <div><label>Street</label><input type="text" name="addr_street" value="{{tx.addr_street}}"></div>
@@ -2770,9 +2807,24 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>Postal code</label><input type="text" name="addr_postal" value="{{tx.addr_postal}}"></div>
  <div><label>Country</label><input type="text" name="addr_country" value="{{tx.addr_country}}"></div>
 </div>
+<p style="margin:14px 0 2px"><b>Schedule OI – other information</b> <span class="muted">(attached to every 1040-NR)</span></p>
+<div class="fgrid">
+ <div><label>A. Country of citizenship</label><input type="text" name="oi_citizen" value="{{tx.oi_citizen}}"></div>
+ <div><label>B. Country of tax residence</label><input type="text" name="oi_residence" value="{{tx.oi_residence}}"></div>
+ <div><label>E. US visa type on the last day of the year</label><input type="text" name="oi_visa" value="{{tx.oi_visa or 'NOT APPLICABLE'}}" placeholder="e.g. B1/B2 or NOT APPLICABLE"></div>
+ <div><label>F. Ever changed visa type / immigration status?</label><select name="oi_visa_changed"><option value="no">No</option><option value="yes" {% if tx.oi_visa_changed == 'yes' %}selected{% endif %}>Yes</option></select></div>
+ <div><label>F. If yes – date and nature of the change</label><input type="text" name="oi_visa_change_text" value="{{tx.oi_visa_change_text}}"></div>
+ <div><label>I. Filed a US income tax return before?</label><select name="oi_prior"><option value="no">No</option><option value="yes" {% if tx.oi_prior == 'yes' %}selected{% endif %}>Yes</option></select></div>
+ <div><label>I. If yes – latest year and form (e.g. 2024 1040-NR)</label><input type="text" name="oi_prior_text" value="{{tx.oi_prior_text}}"></div>
+ <div><label>H. Days in the US in 2023</label><input type="text" name="oi_days_2023" value="{{tx.oi_days_2023}}"></div>
+ <div><label>H. Days in the US in 2024</label><input type="text" name="oi_days_2024" value="{{tx.oi_days_2024}}"></div>
+ <div><label>H. Days in the US in 2025</label><input type="text" name="oi_days_2025" value="{{tx.oi_days_2025}}"></div>
+</div>
+<label style="margin-top:6px">G. Visits to the US during the tax year – one per line: date entered – date departed (day/month/year)</label>
+<textarea name="oi_trips" rows="2" style="width:100%" placeholder="e.g. 14/03/2025 - 20/03/2025">{{tx.oi_trips}}</textarea>
 <label class="tick" style="margin-top:12px"><input type="radio" name="nil" value="1" {% if tx.nil %}checked{% endif %} onchange="taxMode()"> <span><b>Nil return</b> – the client had no U.S. income in this tax year</span></label>
 <div id="nilbox" class="sub"><label class="tick" style="font-weight:400"><input type="checkbox" name="confirm_nil" value="1" {% if tx.confirm_nil %}checked{% endif %}> I have confirmed with the client that they (and their LLC) had no U.S. income, wages or withholding in this tax year</label></div>
-<label class="tick"><input type="radio" name="nil" value="0" {% if not tx.nil %}checked{% endif %} onchange="taxMode()"> <span><b>The client's U.S. LLC had income</b> – prepare Schedule C, Schedule 1 and Form 8995 and work out the tax</span></label>
+<label class="tick"><input type="radio" name="nil" value="0" {% if not tx.nil %}checked{% endif %} onchange="taxMode()"> <span><b>The client's U.S. LLC had income or expenses</b> – the LLC is reported on Schedule C (with Schedule 1 and Form 8995) and the tax is worked out. Use this also when the LLC had <b>no income but real expenses</b> (e.g. registered agent, state fee) – a loss is shown.</span></label>
 <div id="incbox" style="margin-left:26px">
 <div class="fgrid">
  <div><label>LLC name</label><input type="text" name="llc_name" value="{{tx.llc_name}}"></div>
@@ -2790,7 +2842,8 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>Returns and allowances (line 2)</label><input type="text" name="returns" value="{{tx.returns}}"></div>
  <div><label>Cost of goods sold (line 4)</label><input type="text" name="cogs" value="{{tx.cogs}}"></div>
  {% for k, lbl, _f in tax_expenses %}<div><label>{{lbl}}</label><input type="text" name="exp_{{k}}" value="{{tx['exp_' ~ k] if tx['exp_' ~ k] is defined else ''}}"></div>{% endfor %}
-</div></div>
+ <div><label>Other expenses – description (Part V)</label><input type="text" name="exp_other_desc" value="{{tx.exp_other_desc}}" placeholder="e.g. Bank charges"></div>
+</div><p class="muted" style="font-size:12px;margin:4px 0 0">Enter only expenses the LLC actually paid in the year – keep the receipts.</p></div>
 {% if (m.tax or {}).last_errors %}<div class="bad" style="margin-top:12px"><b>The 1040-NR was not prepared:</b><ul style="margin:4px 0 0 18px;padding:0">{% for e in m.tax.last_errors %}<li>{{e}}</li>{% endfor %}</ul></div>{% endif %}
 <div id="taxjs" class="bad" style="display:none;margin-top:12px"></div>
 <div class="btnrow" style="margin-top:12px"><button class="btn secondary" type="submit" name="action" value="save">Save details</button>
