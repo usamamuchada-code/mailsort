@@ -115,6 +115,17 @@ address block, the unit/SIU number and the company name; the image is the ground
 - summary: one short sentence describing the letter for the client.
 - address: the full recipient address block exactly as printed on the page (company name and all
   address lines, separated by ", "); "" if the page shows no recipient address.
+- doc_kind: identifies three key company-setup letters, otherwise "":
+    "ch_auth_code"     – the Companies House letter that ISSUES the company authentication code
+                         (the code itself is printed on the letter, usually sent after incorporation);
+    "hmrc_utr"         – the HMRC letter that gives a company its Corporation Tax Unique Taxpayer
+                         Reference (UTR) (e.g. "Corporation Tax – your Unique Taxpayer Reference",
+                         CT41G / "important information for new companies");
+    "hmrc_activation"  – the HMRC letter containing an ACTIVATION CODE for HMRC online services
+                         (e.g. Corporation Tax online / business tax account activation code).
+  A letter that only MENTIONS or asks for one of these (filing reminders, penalty notices, notices to
+  deliver a return, confirmation statement reminders) is "". Continuation pages: "" unless the page
+  itself clearly shows it.
 
 Respond with ONLY a JSON object with those keys."""
 
@@ -149,7 +160,7 @@ def classify_pages_with_ai(pages: list[dict], client_names: list[str], model: st
         except json.JSONDecodeError:
             data = {"recipient_company": "", "is_continuation": False, "is_blank": False,
                     "sender": "", "letter_type": "other", "urgency": "normal",
-                    "summary": "AI response could not be parsed", "_raw": raw}
+                    "summary": "AI response could not be parsed", "doc_kind": "", "_raw": raw}
         data["page"] = p["page"]
         out.append(data)
         prev_text = p["text"]
@@ -220,9 +231,20 @@ def merge_orphans(letters: list[dict]) -> list[dict]:
             out[-1]["pages"].extend(L["pages"])
             if not out[-1].get("summary") and L.get("summary"):
                 out[-1]["summary"] = L["summary"]
+            if not out[-1].get("doc_kind") and L.get("doc_kind"):
+                out[-1]["doc_kind"] = L["doc_kind"]
         else:
             out.append(L)
     return out
+
+
+DOC_KINDS = ("ch_auth_code", "hmrc_utr", "hmrc_activation")
+
+
+def norm_doc_kind(v) -> str:
+    """AI doc_kind → one of DOC_KINDS or "" (anything unexpected is ignored)."""
+    v = (v or "").strip().lower() if isinstance(v, str) else ""
+    return v if v in DOC_KINDS else ""
 
 
 def group_letters(classified: list[dict], auto_merge: bool = True) -> list[dict]:
@@ -249,6 +271,8 @@ def group_letters(classified: list[dict], auto_merge: bool = True) -> list[dict]
                 conflict = True
             if not conflict:
                 current["pages"].append(c["page"])
+                if not current.get("doc_kind"):
+                    current["doc_kind"] = norm_doc_kind(c.get("doc_kind"))
                 continue
             group_note = (f"page {c['page']} looked like a continuation but is addressed to "
                           f"'{page_name or 'a different company'}' – split into its own letter for safety; "
@@ -256,7 +280,7 @@ def group_letters(classified: list[dict], auto_merge: bool = True) -> list[dict]
         current = {"pages": [c["page"]], "address": c.get("address", ""), "recipient_company": c.get("recipient_company", ""),
                    "sender": c.get("sender", ""), "letter_type": c.get("letter_type", "other"),
                    "urgency": c.get("urgency", "normal"), "summary": c.get("summary", ""),
-                   "group_note": group_note}
+                   "group_note": group_note, "doc_kind": norm_doc_kind(c.get("doc_kind"))}
         letters.append(current)
     if auto_merge:
         letters = merge_orphans(letters)
