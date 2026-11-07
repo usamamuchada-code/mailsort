@@ -16,7 +16,7 @@ Templates live in ./itin_templates (official IRS PDFs, used exactly as published
 """
 from __future__ import annotations
 
-import base64, datetime as dt, io, json, os, re, threading, uuid, zipfile
+import base64, datetime as dt, io, json, os, re, threading, urllib.parse, uuid, zipfile
 from pathlib import Path
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template_string, request, send_file, session
@@ -1724,6 +1724,68 @@ def itin_zip(job):
                      download_name=f"ITIN_{_safe(meta['applicant'])}.zip")
 
 
+# v38p – two printing packs (user's choice of contents and order)
+#   1: W-7 with client signature, W-7-COA, passport     2: engagement form (signed online), W-7
+PACKS = {1: "Printing pack 1 – signed W-7, COA, passport", 2: "Printing pack 2 – engagement form, W-7"}
+
+
+def pack_files(d: Path, meta: dict, n: int) -> list[tuple[str, bytes]]:
+    """[(name in ZIP, bytes)] in the pack's order. Raises ValueError with what is missing."""
+    files = meta.get("files", [])
+    w7 = next((x["file"] for x in files if x["file"].startswith("W-7_") and not x.get("kind")), None)
+    coa = next((x["file"] for x in files if x["file"].startswith("W-7-COA_") and not x.get("kind")), None)
+    out, missing = [], []
+    if n == 1:
+        if w7 and (d / SIG_FILE).exists():
+            out.append(("1_W-7_signed_" + w7[4:], signed_w7_pdf((d / w7).read_bytes(), (d / SIG_FILE).read_bytes())))
+        else:
+            missing.append("the client signature (upload it under Client signature)" if w7 else "the W-7")
+        if coa:
+            out.append(("2_" + coa, (d / coa).read_bytes()))
+        else:
+            missing.append("the Certificate of Accuracy")
+        pp = [x["file"] for x in files if x.get("kind") == "passport"]
+        for i, f in enumerate(pp, 1):
+            out.append((f"3_{f}" if len(pp) == 1 else f"3{chr(96 + i)}_{f}", (d / f).read_bytes()))
+        if not pp:
+            missing.append("the passport")
+    else:
+        eng = [x["file"] for x in files if x.get("kind") == "engagement"]
+        for i, f in enumerate(eng, 1):
+            out.append((f"1_{f}" if len(eng) == 1 else f"1{chr(96 + i)}_{f}", (d / f).read_bytes()))
+        if not eng:
+            missing.append("the engagement form")
+        if w7:
+            out.append(("2_" + w7, (d / w7).read_bytes()))
+        else:
+            missing.append("the W-7")
+    if missing and not out:
+        raise ValueError("Missing " + ", ".join(missing) + ".")
+    return out, missing
+
+
+@bp.get("/itin/job/<job>/pack/<int:n>")
+def itin_pack(job, n):
+    if n not in PACKS:
+        abort(404)
+    d = _job_dir(job)
+    meta = json.loads((d / "job.json").read_text())
+    try:
+        items, missing = pack_files(d, meta, n)
+    except ValueError as ex:
+        flash(f"⚠ {PACKS[n].split(' – ')[0]} could not be made – {ex}")
+        return redirect(f"/itin/job/{job}")
+    if missing and request.args.get("anyway") != "1":
+        return redirect(f"/itin/job/{job}?pack={n}&missing=" + urllib.parse.quote(", ".join(missing)) + "#packs")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in items:
+            z.writestr(name, data)
+    buf.seek(0)
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name=f"ITIN_{_safe(meta['applicant'])}_printing_pack_{n}.zip")
+
+
 def register(app, cfg_fn=None, send_fn=None):
     _CFG["fn"] = cfg_fn
     _SEND["fn"] = send_fn
@@ -2367,10 +2429,15 @@ input[type=date],select{width:100%;padding:8px;border:1px solid #cbd5e1;border-r
  {% if m.a.client_ref %}<div><b>Reference</b>{{m.a.client_ref}}</div>{% endif %}
 </div>
 <div class="btnrow" style="margin-top:14px"><a class="btn" href="/itin/job/{{m.job}}/zip">⬇ Download all ({{m.files|length + (1 if m.signature else 0)}}) as ZIP</a>
+<a class="btn" href="/itin/job/{{m.job}}/pack/1" title="W-7 with client signature, W-7-COA, passport">🖨 Printing pack 1 (ZIP)</a>
+<a class="btn" href="/itin/job/{{m.job}}/pack/2" title="Engagement form (signed online), W-7">🖨 Printing pack 2 (ZIP)</a>
 {% set w7f = [] %}{% for x in m.files if x.file.startswith('W-7_') %}{% if w7f.append(x) %}{% endif %}{% endfor %}{% if w7f %}<a class="btn secondary" href="/itin/job/{{m.job}}/file/{{w7f[0].file}}?inline=1" target="_blank">🖨 Print W-7 (for signing / IRS)</a>
 <a class="btn secondary" href="/itin/job/{{m.job}}/customer-copy.pdf?inline=1" target="_blank">🧾 Customer copy (our details masked)</a>{% if m.signature %}
 <a class="btn secondary" href="/itin/job/{{m.job}}/w7-signed.pdf?inline=1" target="_blank">📄 W-7 with client signature</a>{% endif %}{% endif %}
 <a class="btn secondary" href="/itin">New application</a></div>
+{% if request.args.get('pack') in ('1','2') and request.args.get('missing') %}<div id="packs" class="warn" style="margin-top:10px">⚠ <b>Printing pack {{request.args.pack}}</b> is missing {{request.args.missing}}.
+Add it first, or <a href="/itin/job/{{m.job}}/pack/{{request.args.pack}}?anyway=1"><b>download the pack without it</b></a>.</div>{% endif %}
+<p class="muted" style="margin:6px 0 0"><b>Printing pack 1:</b> W-7 with client signature · W-7-COA · Passport &nbsp;|&nbsp; <b>Printing pack 2:</b> Engagement form (signed online) · W-7{% if not m.signature %} &nbsp;– <span style="color:#b45309">pack 1 needs the client signature uploaded first</span>{% endif %}</p>
 <p class="muted">Before sending to the IRS: check every field against the documents; the applicant signs and dates the W-7;
 our responsible party signs and dates the Acceptance Agent box and the Certificate of Accuracy; attach the copy of the
 identity document and the tax return (or exception documents) as required by the reason boxes ticked.</p></div>
