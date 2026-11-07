@@ -219,6 +219,8 @@ def sc_values(a: dict, t: dict, c: dict) -> dict:
                   "f2_7[0]": "0", "f2_8[0]": _m(c["cogs"])})
     if c["net"] < 0:
         v["c1_7[0]"] = True                                # 32a all investment at risk
+    if str(t.get("llc_formed") or "")[:4] == str(t.get("year") or ""):
+        v["c1_3[0]"] = True                                # H: started or acquired this business during the year (v42j)
     return v
 
 
