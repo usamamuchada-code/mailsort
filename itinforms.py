@@ -2512,7 +2512,8 @@ applicant signature box of a separate <b>W-7 with client signature</b> download 
 <td><span class="lvl {{lv}}">{{levels[lv]}}</span></td>
 <td>{% if up.get(k) %}{% for x in up[k] %}<div>✔ <a href="/itin/job/{{m.job}}/file/{{x.file}}?inline=1" target="_blank">{{x.orig or x.file}}</a>
 <form method="post" action="/itin/job/{{m.job}}/remove" style="display:inline" onsubmit="return confirm('Remove this document?')"><input type="hidden" name="file" value="{{x.file}}"><button class="btn small secondary" style="padding:1px 8px">remove</button></form></div>{% endfor %}
-{% elif lv in ('req','cond') %}<span style="color:#b91c1c;font-weight:600">✖ Missing</span>{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% endif %}{% endfor %}</table>
+{% endif %}{% if k == 'signed_w7' and m.signature %}<div>✔ <a href="/itin/job/{{m.job}}/w7-signed.pdf?inline=1" target="_blank">W-7 with client signature</a> <span class="muted" style="font-size:12px">(from the uploaded signature)</span></div>
+{% elif not up.get(k) %}{% if lv in ('req','cond') %}<span style="color:#b91c1c;font-weight:600">✖ Missing</span>{% else %}<span class="muted">—</span>{% endif %}{% endif %}</td></tr>{% endif %}{% endfor %}</table>
 <form method="post" action="/itin/job/{{m.job}}/upload" enctype="multipart/form-data" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
 <div style="flex:1 1 280px"><label>Add a document</label><select name="doc"><option value="">Choose which document…</option>
 {% for k, d in doc_types.items() %}<option value="{{k}}" {% if k in missing_docs_keys %}style="font-weight:700"{% endif %}>{{d[0].split(' – ')[0]}}{% if rules[k][0] in ('req','cond') and not up.get(k) %} (missing){% endif %}</option>{% endfor %}</select></div>
