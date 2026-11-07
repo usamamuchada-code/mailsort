@@ -1373,6 +1373,21 @@ def itin_generate():
                                       missing=[], log=_load_log()[:40], prefill=a, from_job=from_job,
                                       existing=uploaded_kinds(prev_meta) if prev_meta else {}, review=prev_meta,
                                       has_ai=bool(_cfg().get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")))
+    try:                                    # v42i – postcode missing on line 2 / 3 -> look it up and add it
+        import postcode
+        pairs = [("foreign_1", "foreign_2", "line 3")]
+        if a.get("mail_choice") not in OUR_CHOICES:
+            pairs.insert(0, ("mail_1", "mail_2", "line 2"))
+        for st, ln, lbl in pairs:
+            if a.get(ln) and not postcode.has_postcode(a[ln]):
+                new_line, pr = postcode.add_to_line(a.get(st, ""), a[ln])
+                if pr and pr.get("postcode"):
+                    a[ln] = new_line
+                    flash(f"📮 W-7 {lbl}: {pr['note']} Added: \"{new_line}\".")
+                elif pr:
+                    flash(f"⚠ W-7 {lbl}: no postcode found for \"{a[ln]}\" – ask the client and correct the W-7 if needed.")
+    except Exception as ex:
+        print(f"[itin] postcode lookup failed: {ex}", flush=True)
     job = from_job or uuid.uuid4().hex[:12]
     d = OUT / job
     d.mkdir(parents=True, exist_ok=True)
@@ -1758,6 +1773,17 @@ def tax_defaults(m: dict) -> dict:
     a, k = m.get("a") or {}, m.get("kyc") or {}
     eng = (m.get("engage") or {}).get("signed") or {}
     f2 = [x.strip() for x in (a.get("foreign_2") or a.get("mail_2") or "").split(",") if x.strip()]
+    found_pc = ""
+    try:
+        import postcode
+        for i, seg in enumerate(f2):                    # "Punjab 51310" -> province "Punjab", postcode 51310
+            mm = postcode.PC_RE.search(seg)
+            if mm and not found_pc:
+                found_pc = mm.group(1).upper()
+                f2[i] = (seg[: mm.start()] + seg[mm.end():]).strip(" ,")
+        f2 = [x for x in f2 if x]
+    except Exception:
+        pass
     country, city, prov, postal = (f2[-1] if f2 else ""), (f2[0] if len(f2) > 1 else ""), "", ""
     if len(f2) > 2:
         prov = f2[1]
@@ -1765,6 +1791,7 @@ def tax_defaults(m: dict) -> dict:
     if mpost and any(ch.isdigit() for ch in mpost.group(1)):
         postal = mpost.group(1).strip()
         country = country[: mpost.start()].strip(" ,")
+    postal = postal or found_pc
     try:
         import taxreturn
         years = taxreturn.years_available()
@@ -1794,6 +1821,18 @@ def tax_view(m: dict) -> dict:
     if any((t.get("email") or "").lower().endswith("@" + d) for d in OUR_DOMAINS):
         t["email"] = ""
     return t
+
+
+@bp.get("/itin/postcode")
+def itin_postcode():
+    """v42i – postcode lookup for the staff pages. ?street=&city=&region=&country=  or  ?street=&line=City, Province, Country"""
+    import postcode
+    g = request.args.get
+    if g("line"):
+        new_line, r = postcode.add_to_line(g("street", ""), g("line"))
+        r = r or {"postcode": "", "note": "The line already has a postcode."}
+        return jsonify(dict(r, line=new_line))
+    return jsonify(postcode.lookup(g("street", ""), g("city", ""), g("region", ""), g("country", "")))
 
 
 @bp.post("/itin/job/<job>/tax")
@@ -1848,6 +1887,15 @@ def itin_tax(job):
                 errs.append("Schedule OI item H: enter the number of days in the US for 2023, 2024 and 2025 (0 if none).")
             if not (t["oi_citizen"] and t["oi_residence"]):
                 errs.append("Schedule OI items A and B: enter the country of citizenship and of tax residence.")
+            if not t.get("addr_postal") and t.get("addr_country") and (t.get("addr_city") or t.get("addr_street")):
+                try:
+                    import postcode
+                    pr = postcode.lookup(t["addr_street"], t["addr_city"], t["addr_province"], t["addr_country"])
+                    if pr["postcode"]:
+                        t["addr_postal"] = pr["postcode"]
+                        t["postal_note"] = pr["note"]
+                except Exception as ex:
+                    print(f"[itin] postcode lookup failed: {ex}", flush=True)
             if not (t["addr_street"] and t["addr_country"]):
                 errs.append("Enter the client's home address and country.")
             miss = taxreturn.missing_templates(year, not t["nil"], t.get("prepared_by") == "firm") if year else []
@@ -1868,7 +1916,7 @@ def itin_tax(job):
                                        "kind": "tax_return", "orig": "Prepared by us", "generated": True})
                     t["generated"] = {"when": dt.datetime.now().isoformat(timespec="seconds"), "file": fname,
                                       "forms": included, "tax": c.get("tax", 0), "net": c.get("net", 0),
-                                      "warnings": c["warnings"] + ([f"Schedule OI ({year}) still has to be attached – not installed yet."]
+                                      "warnings": c["warnings"] + ([t["postal_note"] + " It was added automatically."] if t.get("postal_note") else []) + ([f"Schedule OI ({year}) still has to be attached – not installed yet."]
                                                                    if any("Schedule OI" in x for x in miss) else []),
                                       "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin")}
         t["last_errors"] = errs if f.get("action") == "generate" else []      # shown inside the 1040-NR card (v42b)
@@ -2206,11 +2254,24 @@ and prints "Never entered the U.S." when there is no entry date. <a href="/itin/
 <label><input type="radio" name="mail_choice" value="london" id="mc_london" {% if p.mail_choice == 'london' %}checked{% endif %} onchange="mailChoice()"> Our London office ({{ caa.london_mail_1 if caa else '' }}, {{ caa.london_mail_2 if caa else '' }})</label>
 <label><input type="radio" name="mail_choice" value="ours" id="mc_ours" {% if p.mail_choice == 'ours' %}checked{% endif %} onchange="mailChoice()"> Our Houston office ({{ caa.our_mail_1 if caa else '' }}, {{ caa.our_mail_2 if caa else '' }})</label></div>
 <div class="fgrid"><div><label>Street address, apartment number</label><input type="text" name="mail_1" id="mail_1" value="{{p.mail_1}}"></div>
-<div><label>City, state/province, country and postcode</label><input type="text" name="mail_2" id="mail_2" value="{{p.mail_2}}"></div></div>
+<div><label>City, state/province, country and postcode <a href="#" onclick="return pcLine('mail_1','mail_2','pc2')" style="font-weight:400">🔎 add postcode</a></label><input type="text" name="mail_2" id="mail_2" value="{{p.mail_2}}" onblur="pcLine('mail_1','mail_2','pc2',1)"><div id="pc2" class="muted" style="font-size:12px"></div></div></div>
 <div class="warn" id="ours_note" style="display:none;margin-top:6px">IRS letters (ITIN notice, returned documents) will come to our office. <b>Line 3 must have the client's full foreign home address</b> – street and city/country, not just the country – or the IRS may reject it.</div>
 <span class="ln">3 Foreign (non-U.S.) home address – leave blank if the same as line 2 (it is copied). Must be filled if line 2 is a US address or our address. No P.O. box.</span>
 <div class="fgrid"><div><label>Street address, apartment number</label><input type="text" name="foreign_1" value="{{p.foreign_1}}"></div>
-<div><label>City, state/province, country and postcode</label><input type="text" name="foreign_2" value="{{p.foreign_2}}"></div></div>
+<div><label>City, state/province, country and postcode <a href="#" onclick="return pcLine('foreign_1','foreign_2','pc3')" style="font-weight:400">🔎 add postcode</a></label><input type="text" name="foreign_2" id="foreign_2" value="{{p.foreign_2}}" onblur="pcLine('foreign_1','foreign_2','pc3',1)"><div id="pc3" class="muted" style="font-size:12px"></div></div></div>
+<script>
+function pcLine(st, ln, noteId, auto){
+  var s=document.querySelector('[name='+st+']'), l=document.querySelector('[name='+ln+']'), note=document.getElementById(noteId);
+  if(!l || !l.value.trim() || l.readOnly) return false;
+  if(/\b\d{4,6}\b|\b[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}\b/i.test(l.value)){ if(!auto) note.textContent='This line already has a postcode.'; return false }
+  note.textContent='⏳ Looking up the postcode…';
+  fetch('/itin/postcode?street='+encodeURIComponent(s?s.value:'')+'&line='+encodeURIComponent(l.value)).then(function(r){return r.json()}).then(function(r){
+    if(r.postcode && r.line && r.line!=l.value){ l.value=r.line; l.style.background='#fef9c3' }
+    note.textContent=r.note||'';
+  }).catch(function(){ note.textContent='Postcode lookup not available – type it in.' });
+  return false;
+}
+</script>
 
 <span class="ln">4 Birth information &nbsp; 5 Sex</span>
 <div class="fgrid"><div><label>Date of birth</label><input type="date" name="dob" id="dob" value="{{p.dob}}"></div>
@@ -2830,7 +2891,7 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>Street</label><input type="text" name="addr_street" value="{{tx.addr_street}}"></div>
  <div><label>City</label><input type="text" name="addr_city" value="{{tx.addr_city}}"></div>
  <div><label>Province / state / county</label><input type="text" name="addr_province" value="{{tx.addr_province}}"></div>
- <div><label>Postal code</label><input type="text" name="addr_postal" value="{{tx.addr_postal}}"></div>
+ <div><label>Postal code <a href="#" onclick="return findPc()" style="font-weight:400">🔎 find</a></label><input type="text" name="addr_postal" value="{{tx.addr_postal}}"><div id="pcnote" class="muted" style="font-size:12px"></div></div>
  <div><label>Country</label><input type="text" name="addr_country" value="{{tx.addr_country}}"></div>
 </div>
 <p style="margin:14px 0 2px"><b>Schedule OI – other information</b> <span class="muted">(attached to every 1040-NR)</span></p>
@@ -2896,6 +2957,18 @@ Non-resident aliens are not liable for self-employment tax; no standard deductio
     if(!q('occupation').value.trim()) q('occupation').focus(); return false }
   box.style.display='none'; return true;
 }
+function findPc(auto){
+  var q=function(n){return document.querySelector('#taxret [name='+n+']')}, note=document.getElementById('pcnote');
+  if(!q('addr_country').value.trim() || !(q('addr_city').value.trim()||q('addr_street').value.trim())){ if(!auto) note.textContent='Enter the city and country first.'; return false }
+  note.textContent='⏳ Looking up the postcode…';
+  var u='/itin/postcode?'+['street','city','province','country'].map(function(k){return (k=='province'?'region':k)+'='+encodeURIComponent(q('addr_'+(k=='province'?'province':k)).value)}).join('&');
+  fetch(u).then(function(r){return r.json()}).then(function(r){
+    if(r.postcode && !q('addr_postal').value.trim()){ q('addr_postal').value=r.postcode; q('addr_postal').style.background='#fef9c3' }
+    note.textContent=r.note||'';
+  }).catch(function(){ note.textContent='Postcode lookup not available – type it in.' });
+  return false;
+}
+if(!document.querySelector('#taxret [name=addr_postal]').value.trim()) findPc(true);
 function taxMode(){
   var r=document.querySelector('#taxret [name=mode]:checked'), md=r?r.value:'nil', n=(md=='nil');
   document.getElementById('nilval').value=n?'1':'0';
