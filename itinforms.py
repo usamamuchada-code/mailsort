@@ -1748,7 +1748,7 @@ def tax_defaults(m: dict) -> dict:
         years = taxreturn.years_available()
     except Exception:
         years = []
-    return {"year": str(years[-1]) if years else "2025", "status": "single", "digital": "no", "occupation": "",
+    return {"year": str(years[-1]) if years else "2025", "status": "single", "digital": "no", "occupation": "Business owner",
             "phone": a.get("phone") or eng.get("phone", ""), "email": k.get("email") or eng.get("email", ""),
             "addr_street": a.get("foreign_1") or a.get("mail_1", ""), "addr_city": city, "addr_province": prov,
             "addr_postal": postal, "addr_country": short_country(country) if country else "", "nil": True}
@@ -1763,6 +1763,7 @@ def itin_tax(job):
     with _LOCK:
         m = json.loads((d / "job.json").read_text())
         t = {k: (f.get(k) or "").strip() for k in TAX_KEYS}
+        t["occupation"] = t["occupation"] or "Business owner"          # v42c default
         for k, _l, _fld in taxreturn.EXPENSES:
             t[f"exp_{k}"] = (f.get(f"exp_{k}") or "").strip()
         t["nil"] = f.get("nil") == "1"
@@ -1812,6 +1813,7 @@ def itin_tax(job):
                                       "warnings": c["warnings"] + ([f"Schedule OI ({year}) still has to be attached – not installed yet."]
                                                                    if any("Schedule OI" in x for x in miss) else []),
                                       "staff": session.get("user") or os.environ.get("MAILSORT_USER", "admin")}
+        t["last_errors"] = errs if f.get("action") == "generate" else []      # shown inside the 1040-NR card (v42b)
         (d / "job.json").write_text(json.dumps(m, indent=1))
     _ALERT_CACHE["at"] = 0
     for e in errs:
@@ -2756,7 +2758,7 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>Tax year</label><select name="year">{% for y in tax_years %}<option {% if tx.year|string == y|string %}selected{% endif %}>{{y}}</option>{% endfor %}</select></div>
  <div><label>Filing status</label><select name="status">{% for k, v in tax_status.items() %}<option value="{{k}}" {% if tx.status == k %}selected{% endif %}>{{v}}</option>{% endfor %}</select></div>
  <div><label>Digital assets (crypto) received or sold in the year?</label><select name="digital"><option value="no">No</option><option value="yes" {% if tx.digital == 'yes' %}selected{% endif %}>Yes</option></select></div>
- <div><label>Occupation (signature section)</label><input type="text" name="occupation" value="{{tx.occupation}}" placeholder="e.g. Business owner"></div>
+ <div><label>Occupation (signature section) <span style="color:#b91c1c">*</span></label><input type="text" name="occupation" value="{{tx.occupation}}" placeholder="e.g. Business owner"></div>
  <div><label>Phone</label><input type="text" name="phone" value="{{tx.phone}}"></div>
  <div><label>Email</label><input type="text" name="email" value="{{tx.email}}"></div>
 </div>
@@ -2789,13 +2791,26 @@ check the reason box / exception first. If the LLC had U.S. income, untick Nil a
  <div><label>Cost of goods sold (line 4)</label><input type="text" name="cogs" value="{{tx.cogs}}"></div>
  {% for k, lbl, _f in tax_expenses %}<div><label>{{lbl}}</label><input type="text" name="exp_{{k}}" value="{{tx['exp_' ~ k] if tx['exp_' ~ k] is defined else ''}}"></div>{% endfor %}
 </div></div>
+{% if (m.tax or {}).last_errors %}<div class="bad" style="margin-top:12px"><b>The 1040-NR was not prepared:</b><ul style="margin:4px 0 0 18px;padding:0">{% for e in m.tax.last_errors %}<li>{{e}}</li>{% endfor %}</ul></div>{% endif %}
+<div id="taxjs" class="bad" style="display:none;margin-top:12px"></div>
 <div class="btnrow" style="margin-top:12px"><button class="btn secondary" type="submit" name="action" value="save">Save details</button>
-<button class="btn" type="submit" name="action" value="generate" {% if not tax_years %}disabled{% endif %}>📄 Prepare 1040-NR</button></div>
+<button class="btn" type="submit" name="action" value="generate" onclick="return taxCheck()" {% if not tax_years %}disabled{% endif %}>📄 Prepare 1040-NR</button></div>
 </form>
 <p class="muted" style="font-size:13px;margin-bottom:0">Forms installed: {% for y, fl in tax_forms.items() %}{{y}} – {{ fl|join(', ') }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}.
 Non-resident aliens are not liable for self-employment tax; no standard deduction. Check the return before the client signs.</p>
 </div>
-<script>function taxMode(){var n=document.querySelector('[name=nil][value="1"]').checked;document.getElementById('nilbox').style.display=n?'':'none';document.getElementById('incbox').style.display=n?'none':''}taxMode();</script>
+<script>function taxCheck(){
+  var q=function(n){return document.querySelector('#taxret [name='+n+']')}, e=[], nil=q('nil').checked;
+  if(!q('occupation').value.trim()) e.push("Enter the client's occupation (signature section of the 1040-NR).");
+  if(!q('addr_street').value.trim() || !q('addr_country').value.trim()) e.push("Enter the client's home address and country.");
+  if(nil && !q('confirm_nil').checked) e.push("Tick the box to confirm the client had no U.S. income (nil return).");
+  if(!nil && (!q('llc_name').value.trim() || !q('llc_activity').value.trim())) e.push("Enter the LLC name and what the business does.");
+  var box=document.getElementById('taxjs');
+  if(e.length){ box.innerHTML='<b>Please fix before preparing:</b><ul style="margin:4px 0 0 18px;padding:0"><li>'+e.join('</li><li>')+'</li></ul>'; box.style.display='';
+    if(!q('occupation').value.trim()) q('occupation').focus(); return false }
+  box.style.display='none'; return true;
+}
+function taxMode(){var n=document.querySelector('[name=nil][value="1"]').checked;document.getElementById('nilbox').style.display=n?'':'none';document.getElementById('incbox').style.display=n?'none':''}taxMode();</script>
 {% endif %}
 {% if m.status not in ('kyc_sent', 'kyc_received') %}<div class="card" id="signature"><h2 style="margin-top:0">✍ Client signature</h2>
 <p class="muted" style="margin-top:0">Upload the photo or scan of the signature the client sent. It is cleaned up (paper background removed) and placed in the
