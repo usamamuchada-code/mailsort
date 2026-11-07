@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Companies House ConfirmationStatement-v1-3.xsd (from xmlgw.companieshouse.gov.uk/v1-0/schema/forms/).
+     Only change: the include points at the flat baseTypes-v3-7.xsd in the same folder (was ../baseTypes-v3-6.xsd). -->
+<xs:schema xmlns="http://xmlgw.companieshouse.gov.uk" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://xmlgw.companieshouse.gov.uk" elementFormDefault="qualified" attributeFormDefault="unqualified" version="0.1" id="ConfirmationStatement">
+	<xs:include schemaLocation="baseTypes-v3-7.xsd"/>
+	<xs:element name="ConfirmationStatement">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="TradingOnMarket" type="xs:boolean" minOccurs="0"/>
+				<xs:element name="DTR5Applies" type="xs:boolean" minOccurs="0"/>
+				<xs:element name="PSCExemptAsTradingOnRegulatedMarket" type="xs:boolean" minOccurs="0"/>
+				<xs:element name="PSCExemptAsSharesAdmittedOnMarket" type="xs:boolean" minOccurs="0"/>
+				<xs:element name="PSCExemptAsTradingOnUKRegulatedMarket" type="xs:boolean" minOccurs="0"/>
+				<xs:element name="ReviewDate" type="xs:date"/>
+				<xs:element ref="SICCodes" minOccurs="0"/>
+				<xs:element name="StatementOfCapital" type="StatementOfCapitalType" minOccurs="0"/>
+				<xs:element name="Shareholdings" minOccurs="0" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="ShareClass"/>
+							<xs:element name="NumberHeld">
+								<xs:simpleType>
+									<xs:restriction base="xs:decimal">
+										<xs:minInclusive value="0"/>
+										<xs:maxInclusive value="999999999999999.999999"/>
+										<xs:fractionDigits value="6"/>
+									</xs:restriction>
+								</xs:simpleType>
+							</xs:element>
+							<xs:element name="Transfers" minOccurs="0" maxOccurs="200">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="DateOfTransfer" type="xs:date"/>
+										<xs:element name="NumberSharesTransferred">
+											<xs:simpleType>
+												<xs:restriction base="xs:decimal">
+													<xs:maxInclusive value="999999999999999.999999"/>
+													<xs:fractionDigits value="6"/>
+													<xs:minExclusive value="0"/>
+												</xs:restriction>
+											</xs:simpleType>
+										</xs:element>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="Shareholders" maxOccurs="10">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="Name">
+											<xs:complexType>
+												<xs:choice>
+													<xs:sequence>
+														<xs:element ref="Surname"/>
+														<xs:element ref="Forename" minOccurs="0"/>
+													</xs:sequence>
+													<xs:element name="AmalgamatedName">
+														<xs:simpleType>
+															<xs:restriction base="nonEmptyString">
+																<xs:maxLength value="160"/>
+															</xs:restriction>
+														</xs:simpleType>
+													</xs:element>
+												</xs:choice>
+											</xs:complexType>
+										</xs:element>
+										<xs:element name="Address" type="AddressBaseType" minOccurs="0"/>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+						</xs:sequence>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="RegisteredEmailAddress" type="RegisteredEmailAddress" minOccurs="0"/>
+				<xs:element name="AcceptLawfulPurposeStatement" type="AcceptLawfulPurposeStatement"/>
+				<xs:element name="StateConfirmation">
+					<xs:simpleType>
+						<xs:restriction base="xs:string">
+							<xs:length value="4"/>
+							<xs:whiteSpace value="collapse"/>
+							<xs:enumeration value="true"/>
+						</xs:restriction>
+					</xs:simpleType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>
