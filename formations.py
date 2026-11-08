@@ -1,5 +1,5 @@
 """
-UK Formations tab (v41b) – incorporate UK companies and LLPs straight to Companies House by software filing
+UK Formations tab (v41c) – incorporate UK companies and LLPs straight to Companies House by software filing
 (XML Gateway, form "CompanyIncorporation" – schema CompanyIncorporation-v3-8, FormSubmission-v2-11).
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config, send_email).
@@ -39,7 +39,7 @@ try:
 except Exception:  # pragma: no cover – the tab shows a clear message instead
     etree = None
 
-VERSION = "v41b"
+VERSION = "v41c"
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get("DATA_DIR") or ROOT / "data")
 OUT = DATA / "uk_formations"   # own folder – the removed v39a tab left old files in DATA/formations
@@ -1375,6 +1375,49 @@ def poll_route(job):
     return redirect(f"/formations/{job}")
 
 
+@bp.post("/formations/<job>/manual")
+def manual_done(job):
+    """Record an incorporation that staff filed on the Companies House website (before our software is approved)."""
+    num = re.sub(r"\s", "", request.form.get("company_number", "")).upper()
+    if not re.fullmatch(r"[A-Z0-9]{8}", num):
+        flash("Company number must be 8 characters, e.g. 16123456.")
+        return redirect(f"/formations/{job}")
+    with _LOCK:
+        m = load_job(job)
+        if m.get("status") in ("submitted", "pending", "parked"):
+            flash("This one was sent by software – wait for that result.")
+            return redirect(f"/formations/{job}")
+        m.update(status="accepted", mode="website", company_number=num,
+                 incorporation_date=request.form.get("incorporation_date", "").strip(),
+                 auth_code=request.form.get("auth_code", "").strip().upper())
+        f = request.files.get("cert")
+        if f and f.filename and f.filename.lower().endswith(".pdf"):
+            d = job_dir(job) / "out"
+            d.mkdir(parents=True, exist_ok=True)
+            fn = f"Certificate_of_Incorporation_{num}.pdf"
+            f.save(d / fn)
+            m["cert"] = fn
+        log(m, f"Recorded as incorporated on the Companies House website – company number {num}.")
+        save_job(m)
+    flash(f"Recorded – company number {num}. You can now email the client.")
+    return redirect(f"/formations/{job}")
+
+
+@bp.get("/formations/<job>/summary")
+def summary(job):
+    m = load_job(job)
+    s = load_settings()
+    errs, warns = precheck(m, s)
+    rows, cap = share_rows(m["a"]) if has_shares(m["a"]) else ([], {})
+    return render_template_string(SUMMARY_PAGE, m=m, a=m["a"], errs=errs, COMPANY_TYPES=COMPANY_TYPES,
+                                  JUR=JURISDICTIONS, ART=ARTICLES, NOC={**NOC_COMPANY, **NOC_LLP}, MISMATCH=MISMATCH,
+                                  rows=rows, cap={k: {"num": v["num"], "agg": fmt_dec(v["agg"]), "unpaid": fmt_dec(v["unpaid"]),
+                                                      "classes": {c: {"num": x["num"], "agg": fmt_dec(x["agg"]),
+                                                                      "particulars": x["particulars"]} for c, x in v["classes"].items()}}
+                                                  for k, v in cap.items()},
+                                  fmt_dec=fmt_dec, pname=pname, is_llp=is_llp(m["a"]), today=dt.date.today().isoformat())
+
+
 @bp.post("/formations/<job>/reopen")
 def reopen(job):
     with _LOCK:
@@ -1455,6 +1498,27 @@ def file(job, name):
     return send_file(p, as_attachment=request.args.get("dl") == "1")
 
 
+CLIENT_LOGIN_GUIDE = """WHAT HAPPENS NEXT
+We can look after your Companies House and HMRC filings for you – you do not need to log in anywhere.
+If you would like to manage the company online yourself:
+
+1. Companies House (accounts, confirmation statement, changes to directors or address)
+   - Go to www.gov.uk and search "Companies House WebFiling".
+   - Create a GOV.UK One Login with your own email address and mobile number (only you can create it).
+   - Choose "Add a company" and enter the company number and authentication code above.
+
+2. HMRC (Corporation Tax, VAT, PAYE)
+   - HMRC will post the company's Unique Taxpayer Reference (UTR) to the registered office within a few weeks –
+     we will forward it to you.
+   - Go to www.gov.uk and search "HMRC online services sign in", create a Government Gateway account,
+     then add Corporation Tax using the UTR.
+   - If you would like us to deal with HMRC for you, reply to this email and we will send an agent authorisation request.
+
+Please never share your GOV.UK One Login or Government Gateway password with anyone, including us.
+
+"""
+
+
 @bp.post("/formations/<job>/email")
 def email_client(job):
     m = load_job(job)
@@ -1469,6 +1533,7 @@ def email_client(job):
             f"{m.get('incorporation_date', '')}\nCompany authentication code: {m.get('auth_code', '')}\n"
             "(keep the authentication code safe – it is needed to file for the company online)\n\n"
             + ("The certificate of incorporation is attached.\n\n" if att else "")
+            + CLIENT_LOGIN_GUIDE
             + "Kind regards,\nThe Startitup Team")
     try:
         _SEND["fn"](_cfg(), to, f"{a.get('company_name')} – incorporated ({m['company_number']})", body, att)
@@ -1516,6 +1581,58 @@ def register(app, cfg_fn=None, send_fn=None):
 
 
 # ----------------------------------------------------------------------------- pages
+
+SUMMARY_PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><title>{{ a.company_name }} – incorporation summary</title>
+<style>body{font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#111;font-size:14px}
+h1{font-size:20px;margin:0}h2{font-size:15px;margin:22px 0 6px;padding-bottom:4px;border-bottom:2px solid #111}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:5px 7px;text-align:left;vertical-align:top}
+th{background:#f5f5f5;width:34%}.p{border:1px solid #ccc;border-radius:8px;padding:10px;margin:10px 0;page-break-inside:avoid}
+.err{background:#fee2e2;padding:10px;border-radius:8px}.btn{padding:8px 16px;border-radius:99px;border:0;background:#111;color:#fff;cursor:pointer}
+@media print{.noprint{display:none}}</style></head><body>
+<div class="noprint" style="text-align:right"><button class="btn" onclick="print()">Print / save as PDF</button></div>
+<h1>{{ a.company_name or '(no name)' }}</h1><div>Incorporation summary · prepared {{ today }} · Startitup Mail Room</div>
+{% if errs %}<div class="err" style="margin-top:12px"><b>Still to fix before filing:</b><ul>{% for e in errs %}<li>{{e}}</li>{% endfor %}</ul></div>{% endif %}
+{% macro addr(ad) %}{{ [ad.premise, ad.street, ad.thoroughfare, ad.post_town, ad.county, ad.postcode, ad.country]|select|join(', ') }}{% endmacro %}
+<h2>1. Company</h2><table>
+<tr><th>Company name</th><td><b>{{ a.company_name }}</b></td></tr>
+<tr><th>Company type</th><td>{{ COMPANY_TYPES.get(a.company_type) }}{% if a.cic %} – CIC{% endif %}</td></tr>
+<tr><th>Registered in</th><td>{{ JUR.get(a.jurisdiction) }}</td></tr>
+<tr><th>Registered office</th><td>Building: {{a.ro.premise}}<br>Address line 1: {{a.ro.street}}<br>Address line 2: {{a.ro.thoroughfare}}<br>Town: {{a.ro.post_town}}<br>Postcode: {{a.ro.postcode}}<br>Country: {{a.ro.country}}</td></tr>
+<tr><th>Registered email address</th><td>{{ a.registered_email }}</td></tr>
+{% if not is_llp %}<tr><th>SIC codes</th><td>{{ a.sic|select|join(', ') }}</td></tr>
+<tr><th>Articles</th><td>{{ ART.get(a.articles) }}{% if a.restricted_articles %} – with restricted (entrenched) provisions{% endif %}</td></tr>
+<tr><th>Lawful purpose statement</th><td>Yes – the company is being formed for a lawful purpose</td></tr>{% endif %}
+<tr><th>Same day</th><td>{{ 'Yes' if a.same_day else 'No' }}</td></tr>
+{% if a.reject_reference %}<tr><th>Reject reference</th><td>{{a.reject_reference}}</td></tr>{% endif %}
+</table>
+{% for p in a.people if p.roles.director or p.roles.secretary or p.roles.member or p.roles.psc or p.roles.subscriber or p.roles.guarantor %}
+{% if loop.first %}<h2>2. People</h2>{% endif %}
+<div class="p"><b style="font-size:15px">{{ pname(p) }}</b> –
+{{ [('Director' if p.roles.director and not is_llp), ('Secretary' if p.roles.secretary and not is_llp), ('LLP member' if p.roles.member and is_llp), ('designated' if p.roles.designated and is_llp), ('PSC' if p.roles.psc), ('Subscriber' if p.roles.subscriber), ('Guarantor' if p.roles.guarantor)]|select|join(' · ') }}
+<table style="margin-top:6px">
+{% if p.kind=='person' %}
+<tr><th>Title / first / middle / surname</th><td>{{p.title}} / {{p.forename}} / {{p.other_forenames}} / <b>{{p.surname}}</b></td></tr>
+{% if p.former_names %}<tr><th>Former names</th><td>{{p.former_names}}</td></tr>{% endif %}
+{% set full = p.roles.director or p.roles.member or p.roles.psc %}{% if full %}<tr><th>Date of birth</th><td>{{p.dob}}</td></tr>
+<tr><th>Nationality</th><td>{{p.nationality}}</td></tr>
+<tr><th>Country of residence</th><td>{{p.residence_country}}</td></tr>
+<tr><th>Personal code (ID verification)</th><td><b>{{p.personal_code}}</b>{% if p.name_mismatch %} – name differs: {{ MISMATCH.get(p.name_mismatch) }}{% endif %}</td></tr>
+{% endif %}<tr><th>Correspondence address</th><td>{{ 'Same as registered office' if p.service_same_ro else addr(p.service) }}</td></tr>
+{% if full %}<tr><th>Home address</th><td>{{ ('Same as registered office' if p.service_same_ro else 'Same as correspondence address') if p.res_same_service else addr(p.res) }}</td></tr>{% endif %}
+{% else %}
+<tr><th>Name</th><td><b>{{p.corp_name}}</b></td></tr><tr><th>Address</th><td>{{ addr(p.corp_addr) }}</td></tr>
+<tr><th>Registration</th><td>{% if p.kind=='corporate' %}{{ 'UK' if p.reg_uk else 'Non-UK' }} {{p.reg_no}}{% endif %} {{p.place_registered}} {% if p.law %}· law: {{p.law}}{% endif %} {% if p.legal_form %}· legal form: {{p.legal_form}}{% endif %} {{p.country_or_state}}</td></tr>
+{% endif %}
+{% if p.roles.psc %}<tr><th>Nature of control</th><td>{% for k in p.noc %}{{ NOC.get(k, k) }}{{ '; ' if not loop.last }}{% endfor %}</td></tr>{% endif %}
+{% if p.roles.subscriber and rows %}<tr><th>Shares</th><td>{% for r in rows if r.person.id==p.id %}{{r.num}} × {{r.cls}} at {{ fmt_dec(r.nominal) }} {{r.currency}} (paid {{ fmt_dec(r.paid) }}, unpaid {{ fmt_dec(r.unpaid) }}){{ '<br>'|safe if not loop.last }}{% endfor %}</td></tr>{% endif %}
+{% if p.roles.guarantor %}<tr><th>Amount guaranteed</th><td>£{{p.guarantee}}</td></tr>{% endif %}
+{% if p.roles.director or p.roles.secretary or p.roles.member %}<tr><th>Consented to act</th><td>{{ 'Yes' if p.consent else 'NO – get consent first' }}</td></tr>{% endif %}
+</table></div>{% endfor %}
+{% if a.no_psc %}<p><b>PSC statement:</b> there is no person with significant control.</p>{% endif %}
+{% if cap %}<h2>3. Statement of capital</h2><table><tr><th style="width:auto">Currency</th><th style="width:auto">Class</th><th style="width:auto">Number</th><th style="width:auto">Aggregate nominal</th><th style="width:auto">Rights (prescribed particulars)</th></tr>
+{% for cur, c in cap.items() %}{% for cls, k in c.classes.items() %}<tr><td>{{cur}}</td><td>{{cls}}</td><td>{{k.num}}</td><td>{{k.agg}}</td><td>{{k.particulars}}</td></tr>{% endfor %}
+<tr><td colspan="2"><b>Total {{cur}}</b></td><td><b>{{c.num}}</b></td><td><b>{{c.agg}}</b></td><td>Total unpaid: {{c.unpaid}}</td></tr>{% endfor %}</table>{% endif %}
+</body></html>"""
 
 LIST_PAGE = r"""{% extends "base" %}{% block body %}
 <div class="card"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
@@ -1610,7 +1727,7 @@ table.mini td,table.mini th{padding:5px}
 </div>
 {% if m.status=='accepted' %}
 <div style="margin-top:14px;padding:14px;background:var(--ok);border-radius:8px">
-<b>Company number: {{ m.company_number }}</b> · incorporated {{ (m.incorporation_date or '')|ukdate }} · authentication code <b>{{ m.auth_code }}</b>
+<b>Company number: {{ m.company_number }}</b>{% if m.mode=='website' %} <span class="pill">filed on CH website</span>{% endif %} · incorporated {{ (m.incorporation_date or '')|ukdate }} · authentication code <b>{{ m.auth_code }}</b>
 <div class="btnrow" style="margin-top:10px">
 {% if m.cert %}<a class="btn small" href="/formations/{{m.id}}/file/{{m.cert}}" target="_blank">Certificate of incorporation</a>{% else %}<span class="muted">Certificate not downloaded yet – press "Check status now".</span>{% endif %}
 <form method="post" action="/formations/{{m.id}}/email" style="display:flex;gap:6px"><input type="text" name="to" value="{{a.client_email}}" placeholder="client email" style="width:240px">
@@ -1681,7 +1798,16 @@ table.mini td,table.mini th{padding:5px}
 <div class="card"><h2>5. Check and send</h2>
 <div id="probs">{% if errs %}<ul class="errs">{% for e in errs %}<li>{{e}}</li>{% endfor %}</ul>{% endif %}{% if warns %}<ul class="warns">{% for w in warns %}<li>{{w}}</li>{% endfor %}</ul>{% endif %}</div>
 <div class="btnrow"><button class="btn secondary" type="button" onclick="fullCheck()">Run full check (official Companies House schema)</button>
-<a class="btn secondary" href="/formations/{{m.id}}/xml" target="_blank">Preview the XML</a></div>
+<a class="btn secondary" href="/formations/{{m.id}}/xml" target="_blank">Preview the XML</a>
+<a class="btn secondary" href="/formations/{{m.id}}/summary" target="_blank">Summary sheet (to file on the CH website)</a></div>
+{% if m.status not in ('submitted','pending','parked','accepted') %}
+<details style="margin-top:14px"><summary style="cursor:pointer;font-weight:700">Filed it on the Companies House website instead? Record the result here</summary>
+<form method="post" action="/formations/{{m.id}}/manual" enctype="multipart/form-data" style="margin-top:10px">
+<div class="grid"><div><label>Company number</label><input type="text" name="company_number" placeholder="e.g. 16123456"></div>
+<div><label>Incorporation date</label><input type="date" name="incorporation_date" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px;width:100%"></div>
+<div><label>Authentication code</label><input type="text" name="auth_code" placeholder="6 characters"></div>
+<div><label>Certificate (PDF, optional)</label><input type="file" name="cert" accept=".pdf"></div></div>
+<button class="btn small" style="margin-top:10px">Mark as incorporated</button></form></details>{% endif %}
 <div id="checkRes" style="margin-top:10px"></div>
 {% if not locked %}
 <form method="post" action="/formations/{{m.id}}/submit" style="margin-top:16px;padding:14px;border:1px solid var(--line);border-radius:10px" onsubmit="return beforeSend(this)">
