@@ -34,7 +34,7 @@ try:
 except Exception:  # pragma: no cover
     etree = None
 
-VERSION = "v44a"
+VERSION = "v44c"
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get("DATA_DIR") or ROOT / "data")
 OUT = DATA / "uktax"
@@ -64,6 +64,9 @@ FILING_TYPES = {
     "ACC_DORMANT": {"label": "Dormant accounts", "auth": "CH", "group": "ch", "for": ("company",)},
     "ACC_MICRO": {"label": "Micro-entity accounts", "auth": "CH", "group": "ch", "for": ("company",)},
     "ACC_SMALL": {"label": "Small company accounts (filleted)", "auth": "CH", "group": "ch", "for": ("company",)},
+    "ACC_LLP": {"label": "LLP accounts", "auth": "CH", "group": "ch", "for": ("llp",)},
+    "ACC_FULL": {"label": "Full / abridged / audited accounts (incl. guarantee, CIC, charity)", "auth": "CH", "group": "ch",
+                 "for": ("company", "llp")},
     "CS01": {"label": "Confirmation statement (CS01)", "auth": "CH", "group": "ch", "for": ("company", "llp")},
     "CT600": {"label": "Corporation Tax return (CT600)", "auth": "HMRC", "group": "ct", "for": ("company",)},
     "SA800": {"label": "Partnership return (SA800)", "auth": "HMRC", "group": "sa800", "for": ("partnership", "llp")},
@@ -356,8 +359,15 @@ def new_filing(c: dict, ftype: str) -> dict:
         d.update(start=c.get("accounts_next_start", ""), end=c.get("accounts_next_end", ""),
                  approved=dt.date.today().isoformat(), employees="0", first_year="",
                  signer=(c.get("officers") or [{}])[0].get("forename", "") + " " + (c.get("officers") or [{}])[0].get("surname", ""),
-                 trading_status="never" if ftype == "ACC_DORMANT" else "")
-        for k in ("fixed", "cash", "debtors", "unpaid_capital", "cred1", "cred2", "provisions", "share_capital", "other_reserves"):
+                 trading_status="never" if ftype == "ACC_DORMANT" else "", regime="micro" if ftype == "ACC_LLP" else "",
+                 size="small", fmt="full", audited="", entity="llp" if c["kind"] == "llp" else "shares")
+        for k in PL_KEYS + ["restricted_funds"]:
+            d[k] = ""
+            d["py_" + k] = ""
+        for k in TEXT_KEYS:
+            d[k] = ""
+        for k in ("fixed", "cash", "debtors", "unpaid_capital", "cred1", "cred2", "provisions", "share_capital", "other_reserves",
+                  "members_capital", "due_from_members"):
             d[k] = ""
             d["py_" + k] = ""
     elif ftype == "CS01":
@@ -447,7 +457,7 @@ def alert_count() -> int:
 
 
 def suggested_filings(c: dict) -> list[str]:
-    base = {"company": ["ACC_MICRO", "CS01", "CT600"], "llp": ["CS01", "SA800"], "partnership": ["SA800"],
+    base = {"company": ["ACC_MICRO", "CS01", "CT600"], "llp": ["ACC_LLP", "CS01", "SA800"], "partnership": ["SA800"],
             "individual": ["SA100"]}[c["kind"]]
     open_types = {("ACC" if f["type"].startswith("ACC_") else f["type"]) for f in c["filings"] if not is_done(f)}
     return [t for t in base if ("ACC" if t.startswith("ACC_") else t) not in open_types]
@@ -467,6 +477,66 @@ ACC_LINES = [  # key, label, sign (+ asset / - liability)
 ]
 
 
+LLP_LINES = [x for x in ACC_LINES if x[0] != "share_capital"] + [
+    ("members_capital", "Members' capital classified as equity", 0),
+    ("due_from_members", "of which (in debtors): amounts due from members", 0),
+]
+
+
+PL_LINES = [  # key, label, FRC concept (None = shown untagged)
+    ("turnover", "Turnover", "core:TurnoverRevenue"),
+    ("cost_sales", "Cost of sales", "core:CostSales"),
+    ("dist", "Distribution costs", "core:DistributionCosts"),
+    ("admin", "Administrative expenses", "core:AdministrativeExpenses"),
+    ("other_income", "Other operating income", "core:OtherOperatingIncomeFormat1"),
+    ("interest_rec", "Interest receivable and similar income", "core:OtherInterestReceivableSimilarIncomeFinanceIncome"),
+    ("interest_pay", "Interest payable and similar expenses", "core:InterestPayableSimilarChargesFinanceCosts"),
+    ("tax", "Tax on profit", "core:TaxTaxCreditOnProfitOrLossOnOrdinaryActivities"),
+    ("dividends", "Dividends paid (shown in reserves note)", None),
+    ("cf_oper", "Cash flow: net cash from operating activities", "core:NetCashFlowsFromUsedInOperatingActivities"),
+    ("cf_inv", "Cash flow: net cash from investing activities", "core:NetCashFlowsFromUsedInInvestingActivities"),
+    ("cf_fin", "Cash flow: net cash from financing activities", "core:NetCashFlowsFromUsedInFinancingActivities"),
+]
+PL_KEYS = [k for k, _, _ in PL_LINES]
+TEXT_KEYS = ["principal_activity", "directors_report", "strategic_report", "notes_text", "auditor_firm", "auditor_ssa",
+             "auditor_address", "audit_date", "audit_custom", "guarantee_amount", "cic_activities", "cic_consultation",
+             "cic_remuneration", "cic_transfers", "charity_number"]
+SIZES = {"small": "Small", "medium": "Medium-sized", "large": "Large"}
+ENTITIES = {"shares": "Company limited by shares", "guarantee": "Company limited by guarantee",
+            "cic": "Community interest company (CIC)", "charity": "Charitable company", "llp": "LLP"}
+
+
+def pl_figures(d: dict, prefix="") -> dict:
+    p = {k: whole(D(d.get(prefix + k))) for k in PL_KEYS}
+    p["gross"] = p["turnover"] - p["cost_sales"]
+    p["operating"] = p["gross"] - p["dist"] - p["admin"] + p["other_income"]
+    p["pbt"] = p["operating"] + p["interest_rec"] - p["interest_pay"]
+    p["pat"] = p["pbt"] - p["tax"]
+    p["cf_net"] = p["cf_oper"] + p["cf_inv"] + p["cf_fin"]
+    p["any"] = any(p[k] for k in ("turnover", "cost_sales", "dist", "admin", "other_income", "interest_rec", "interest_pay", "tax"))
+    p["any_cf"] = any(p[k] for k in ("cf_oper", "cf_inv", "cf_fin"))
+    return p
+
+
+def full_opts(f: dict) -> dict:
+    d = f.get("d", {})
+    size = d.get("size") if d.get("size") in SIZES else "small"
+    audited = bool(d.get("audited")) or size != "small"
+    return {"size": size, "abridged": d.get("fmt") == "abridged" and size == "small", "audited": audited,
+            "entity": d.get("entity") if d.get("entity") in ENTITIES else "shares"}
+
+
+def acc_kind(f: dict) -> tuple[bool, bool, bool]:
+    """(llp, dormant, micro)"""
+    t, d = f["type"], f.get("d", {})
+    if t == "ACC_LLP":
+        r = d.get("regime") or "micro"
+        return True, r == "dormant", r in ("micro", "dormant")
+    if t == "ACC_FULL":
+        return full_opts(f)["entity"] == "llp", False, False
+    return False, t == "ACC_DORMANT", t in ("ACC_MICRO", "ACC_DORMANT")
+
+
 def acc_figures(d: dict, prefix="") -> dict:
     g = {k: whole(D(d.get(prefix + k))) for k, _, _ in ACC_LINES}
     g["other_reserves"] = whole(D(d.get(prefix + "other_reserves")))
@@ -475,7 +545,15 @@ def acc_figures(d: dict, prefix="") -> dict:
     g["talcl"] = g["unpaid_capital"] + g["fixed"] + g["ncl"]
     g["net"] = g["talcl"] - g["cred2"] - g["provisions"]
     g["reserves"] = g["net"] - g["share_capital"] - g["other_reserves"]   # profit and loss account balances the sheet
+    # LLP: members' interests. Profits are normally divided automatically -> "Loans and other debts due to members"
+    g["members_capital"] = whole(D(d.get(prefix + "members_capital")))
+    g["due_from_members"] = whole(D(d.get(prefix + "due_from_members")))
+    g["loans_members"] = g["net"] - g["members_capital"] - g["other_reserves"]
+    g["other_interests"] = g["members_capital"] + g["other_reserves"]
+    g["total_interests"] = g["loans_members"] + g["other_interests"] - g["due_from_members"]
     g["equity"] = g["net"]
+    g["restricted_funds"] = whole(D(d.get(prefix + "restricted_funds")))
+    g["unrestricted_funds"] = g["net"] - g["restricted_funds"]
     return g
 
 
@@ -486,8 +564,44 @@ def has_prior(d: dict) -> bool:
 def acc_checks(c: dict, f: dict) -> tuple[list[str], list[str]]:
     d, t = f["d"], f["type"]
     errs, warns = [], []
-    if c["kind"] != "company":
-        errs.append("Accounts filing here is for limited companies only (LLP accounts are not built yet).")
+    llp, dormant, micro = acc_kind(f)
+    if t == "ACC_FULL":
+        o = full_opts(f)
+        if (o["entity"] == "llp") != (c["kind"] == "llp"):
+            errs.append("Entity type does not match the client (choose 'LLP' only for an LLP).")
+        pl = pl_figures(d)
+        if not o["abridged"] and not pl["turnover"] and o["entity"] not in ("charity",):
+            warns.append("Turnover is 0 – full accounts normally show turnover.")
+        if not (d.get("principal_activity") or "").strip():
+            errs.append("Principal activity (directors' report) is needed for full accounts.")
+        if o["audited"]:
+            for k, lab in (("auditor_firm", "auditor firm name"), ("auditor_ssa", "senior statutory auditor"),
+                           ("audit_date", "date of the auditor's report")):
+                if not (d.get(k) or "").strip():
+                    errs.append(f"Audited accounts: {lab} is needed.")
+            ad = pdate(d.get("audit_date"))
+            if ad and pdate(d.get("approved")) and ad < pdate(d.get("approved")):
+                errs.append("The auditor's report cannot be dated before the directors approved the accounts.")
+        if o["size"] != "small" and not (d.get("strategic_report") or "").strip() and o["entity"] != "llp":
+            errs.append("Medium and large companies must include a strategic report.")
+        if o["size"] != "small" and not pl["any_cf"] and o["size"] == "large":
+            warns.append("Large companies normally include a cash flow statement – enter the cash flow figures.")
+        if o["entity"] == "cic" and not (d.get("cic_activities") or "").strip():
+            errs.append("CIC: the community interest report (CIC34) needs a description of the activities and community benefit.")
+        if o["entity"] == "guarantee" and D(acc_figures(d)["share_capital"]):
+            errs.append("A company limited by guarantee has no share capital – set called up share capital to 0.")
+        if has_prior(d) and pl["any"] and not o["abridged"]:
+            g0, gp0 = acc_figures(d), acc_figures(d, "py_")
+            mv = g0["reserves"] - gp0["reserves"]
+            if o["entity"] in ("shares", "guarantee", "cic") and mv != pl["pat"] - pl["dividends"]:
+                warns.append(f"Profit and loss reserve moved by {money(mv)} but profit after tax less dividends is "
+                             f"{money(pl['pat'] - pl['dividends'])} – check the figures.")
+    elif llp and c["kind"] != "llp":
+        errs.append("LLP accounts are only for LLPs – change the client type or choose company accounts.")
+    elif not llp and c["kind"] != "company":
+        errs.append("For an LLP use 'LLP accounts'.")
+    if llp and not is_llp_number(c.get("company_number")):
+        warns.append("An LLP number normally starts with OC (England & Wales), SO (Scotland) or NC (Northern Ireland).")
     if not c.get("company_number"):
         errs.append("Company number is missing.")
     if not re.fullmatch(r"[A-Za-z0-9]{6,8}", c.get("auth_code") or ""):
@@ -506,9 +620,16 @@ def acc_checks(c: dict, f: dict) -> tuple[list[str], list[str]]:
     elif ap > dt.date.today():
         errs.append("Approval date cannot be in the future.")
     if not (d.get("signer") or "").strip():
-        errs.append("Name of the director signing the balance sheet is needed.")
+        errs.append(f"Name of the {'designated member' if llp else 'director'} signing the balance sheet is needed.")
     g = acc_figures(d)
-    if g["share_capital"] <= 0:
+    if llp:
+        if g["due_from_members"] > g["debtors"]:
+            errs.append("Amounts due from members cannot be more than total debtors.")
+        if dormant and (g["loans_members"] != 0 or g["fixed"] or g["cred2"]):
+            warns.append("A dormant LLP normally has no profits due to members, fixed assets or long-term creditors – check.")
+        if g["net"] < 0:
+            warns.append("Net liabilities attributable to members – check whether members must contribute (going concern note).")
+    elif g["share_capital"] <= 0 and not (t == "ACC_FULL" and full_opts(f)["entity"] in ("guarantee", "charity", "cic")):
         warns.append("Called up share capital is 0 – check the number of shares issued (usually £1 or £100).")
     if t == "ACC_DORMANT":
         if g["fixed"] or g["cred2"] or g["provisions"]:
@@ -520,7 +641,7 @@ def acc_checks(c: dict, f: dict) -> tuple[list[str], list[str]]:
             errs.append("'Never traded' but the balance sheet shows profit or loss reserves – change the trading status or figures.")
     if not d.get("first_year") and not has_prior(d):
         warns.append("No comparative (previous year) figures – tick 'First accounts' if this is the first period.")
-    if t != "ACC_DORMANT" and not str(d.get("employees", "")).strip():
+    if not dormant and not str(d.get("employees", "")).strip():
         errs.append("Average number of employees (including directors) is required.")
     return errs, warns
 
@@ -530,7 +651,7 @@ def taxonomy_ns(year: str) -> dict:
     v = f"{y}-01-01"
     return {"entry": f"https://xbrl.frc.org.uk/FRS-102/{v}/FRS-102-{v}.xsd",
             "core": f"http://xbrl.frc.org.uk/fr/{v}/core", "bus": f"http://xbrl.frc.org.uk/cd/{v}/business",
-            "direp": f"http://xbrl.frc.org.uk/reports/{v}/direp"}
+            "direp": f"http://xbrl.frc.org.uk/reports/{v}/direp", "aurep": f"http://xbrl.frc.org.uk/reports/{v}/aurep"}
 
 
 def build_ixbrl(c: dict, f: dict, s: dict) -> str:
@@ -543,11 +664,20 @@ def build_ixbrl(c: dict, f: dict, s: dict) -> str:
     pe = s_ - dt.timedelta(days=1) if s_ else None
     ps = add_months(s_, -12) if s_ else None
     g, gp = acc_figures(d), acc_figures(d, "py_")
-    dormant = t == "ACC_DORMANT"
-    micro = t in ("ACC_MICRO", "ACC_DORMANT")
+    llp, dormant, micro = acc_kind(f)
+    entity = "LLP" if llp else "company"
+    officer = "designated member" if llp else "director"
     name = c.get("name", "")
     signer = (d.get("signer") or "").strip()
-    std_member = "bus:Micro-entities" if micro else "bus:SmallEntities"
+    full = t == "ACC_FULL"
+    o = full_opts(f) if full else {"size": "small", "abridged": False, "audited": False, "entity": "llp" if llp else "shares"}
+    ent = o["entity"]
+    pl, plp = pl_figures(d), pl_figures(d, "py_")
+    std_member = "bus:Micro-entities" if micro else ("bus:FRS102" if o["size"] != "small" else "bus:SmallEntities")
+    type_member = "bus:AbridgedAccounts" if o["abridged"] else "bus:FullAccounts"
+    status_member = "bus:AuditedAccounts" if o["audited"] else "bus:AuditExempt-NoAccountantsReport"
+    if ent == "charity":
+        entity = "charitable company"
 
     ctx = []
 
@@ -563,8 +693,8 @@ def build_ixbrl(c: dict, f: dict, s: dict) -> str:
     context("cy", cy)
     context("cyi", e_.isoformat())
     context("cy_std", cy, [("bus:AccountingStandardsDimension", std_member)])
-    context("cy_type", cy, [("bus:AccountsTypeDimension", "bus:FullAccounts")])
-    context("cy_status", cy, [("bus:AccountsStatusDimension", "bus:AuditExempt-NoAccountantsReport")])
+    context("cy_type", cy, [("bus:AccountsTypeDimension", type_member)])
+    context("cy_status", cy, [("bus:AccountsStatusDimension", status_member)])
     context("cy_dir1", cy, [("bus:EntityOfficersDimension", "bus:Director1")])
     if dormant:
         context("cy_trading", cy, [("bus:EntityTradingStatusDimension", "bus:EntityHasNeverTraded" if d.get("trading_status") == "never"
@@ -618,44 +748,143 @@ def build_ixbrl(c: dict, f: dict, s: dict) -> str:
     line("Creditors: amounts falling due after more than one year", "cred2", "core:Creditors", "cyi_a1", "pyi_a1")
     line("Provisions for liabilities", "provisions", "core:ProvisionsForLiabilitiesBalanceSheetSubtotal", "cyi", "pyi")
     line("Net assets (liabilities)", "net", "core:NetAssetsLiabilities", "cyi", "pyi", "tot", always=True)
-    rows.append('<tr><td colspan="4" class="h">Capital and reserves</td></tr>')
-    line("Called up share capital", "share_capital", "core:Equity", "cyi_sc", "pyi_sc", always=True)
-    line("Other reserves", "other_reserves", "core:Equity", "cyi_or", "pyi_or")
-    line("Profit and loss account", "reserves", "core:Equity", "cyi_re", "pyi_re", always=not dormant)
-    line("Shareholders' funds", "equity", "core:Equity", "cyi", "pyi", "tot", always=True)
+    def plain(label, key, cls="", always=False):   # no FRC concept exists for LLP members' interests – shown untagged
+        cv, pv = g[key], gp[key]
+        if not always and cv == 0 and (not prior or pv == 0):
+            return
+        f_ = lambda v: "-" if v == 0 else (f"({abs(v):,.0f})" if v < 0 else f"{v:,.0f}")
+        rows.append(f'<tr class="{cls}"><td>{esc(label)}</td><td class="n"></td><td class="v">{f_(cv)}</td>'
+                    + (f'<td class="v">{f_(pv)}</td>' if prior else "") + "</tr>")
 
-    if dormant:
+    if llp:
+        rows[-1] = rows[-1].replace("Net assets (liabilities)", "Net assets attributable to members")
+        rows.append('<tr><td colspan="4" class="h">Represented by:</td></tr>')
+        plain("Loans and other debts due to members", "loans_members", always=True)
+        rows.append('<tr><td colspan="4" class="h">Members\' other interests</td></tr>')
+        line("Members' capital classified as equity", "members_capital", "core:Equity", "cyi_sc", "pyi_sc")
+        line("Other reserves", "other_reserves", "core:Equity", "cyi_or", "pyi_or")
+        rows.append(f'<tr class="tot"><td>Total members\' interests (net assets attributable to members)</td><td class="n"></td>'
+                    f'<td class="v">{g["net"]:,.0f}</td>' + (f'<td class="v">{gp["net"]:,.0f}</td>' if prior else "") + "</tr>")
+        rows.append('<tr><td colspan="4" class="h">Total members\' interests</td></tr>')
+        plain("Amounts due from members (included in debtors)", "due_from_members")
+        plain("Loans and other debts due to members", "loans_members", always=True)
+        plain("Members' other interests", "other_interests")
+        plain("Total", "total_interests", "tot", always=True)
+    elif ent == "charity":
+        rows[-1] = rows[-1].replace("Net assets (liabilities)", "Net assets")
+        rows.append('<tr><td colspan="4" class="h">Funds of the charity</td></tr>')
+        plain("Restricted funds", "restricted_funds")
+        plain("Unrestricted funds", "unrestricted_funds", always=True)
+        line("Total charity funds", "equity", "core:Equity", "cyi", "pyi", "tot", always=True)
+    else:
+        rows.append('<tr><td colspan="4" class="h">Capital and reserves</td></tr>')
+        if ent != "guarantee":
+            line("Called up share capital", "share_capital", "core:Equity", "cyi_sc", "pyi_sc", always=ent == "shares")
+        line("Other reserves", "other_reserves", "core:Equity", "cyi_or", "pyi_or")
+        line("Profit and loss account", "reserves", "core:Equity", "cyi_re", "pyi_re", always=not dormant)
+        line("Members' funds" if ent == "guarantee" else "Shareholders' funds", "equity", "core:Equity", "cyi", "pyi", "tot", always=True)
+
+    # ---- profit and loss account / cash flow (full, abridged and audited accounts)
+    plrows, cfrows = [], []
+
+    def pline(target, label, key, concept, cls="", always=False, neg=False, src=None):
+        a, b = (src or (pl, plp))
+        cv, pv = a[key], b[key]
+        if not always and cv == 0 and (not prior or pv == 0):
+            return
+        def cell(v, cid):
+            v2 = -v if neg else v
+            if concept is None:
+                return "-" if v == 0 else (f"({abs(v2):,.0f})" if v2 < 0 else f"{v2:,.0f}")
+            if neg and v != 0:   # an expense: tagged as a positive figure, shown in brackets
+                return f'({nf(concept, cid, v)})'
+            return nf(concept, cid, v)
+        target.append(f'<tr class="{cls}"><td>{esc(label)}</td><td class="n"></td><td class="v">{cell(cv, "cy")}</td>'
+                      + (f'<td class="v">{cell(pv, "py")}</td>' if prior else "") + "</tr>")
+
+    if full and not o["abridged"]:
+        pline(plrows, "Turnover", "turnover", "core:TurnoverRevenue", always=True)
+        pline(plrows, "Cost of sales", "cost_sales", "core:CostSales", neg=True)
+    if full:
+        pline(plrows, "Gross profit", "gross", "core:GrossProfitLoss", "sub", always=True)
+        pline(plrows, "Distribution costs", "dist", "core:DistributionCosts", neg=True)
+        pline(plrows, "Administrative expenses", "admin", "core:AdministrativeExpenses", neg=True)
+        pline(plrows, "Other operating income", "other_income", "core:OtherOperatingIncomeFormat1")
+        pline(plrows, "Operating profit (loss)", "operating", "core:OperatingProfitLoss", "sub", always=True)
+        pline(plrows, "Interest receivable and similar income", "interest_rec", "core:OtherInterestReceivableSimilarIncomeFinanceIncome")
+        pline(plrows, "Interest payable and similar expenses", "interest_pay", "core:InterestPayableSimilarChargesFinanceCosts", neg=True)
+        pline(plrows, "Profit (loss) before tax", "pbt", "core:ProfitLossOnOrdinaryActivitiesBeforeTax", "sub", always=True)
+        if not llp and ent != "charity":
+            pline(plrows, "Tax on profit", "tax", "core:TaxTaxCreditOnProfitOrLossOnOrdinaryActivities", neg=True)
+        pline(plrows, ("Profit for the financial year available for division among members" if llp else
+                       "Net movement in funds" if ent == "charity" else "Profit (loss) for the financial year"),
+              "pat", "core:ProfitLoss", "tot", always=True)
+        if pl["any_cf"] or o["size"] == "large":
+            pline(cfrows, "Net cash from operating activities", "cf_oper", "core:NetCashFlowsFromUsedInOperatingActivities", always=True)
+            pline(cfrows, "Net cash from investing activities", "cf_inv", "core:NetCashFlowsFromUsedInInvestingActivities", always=True)
+            pline(cfrows, "Net cash from financing activities", "cf_fin", "core:NetCashFlowsFromUsedInFinancingActivities", always=True)
+            pline(cfrows, "Net increase (decrease) in cash", "cf_net", "core:IncreaseDecreaseInCashCashEquivalents", "tot", always=True)
+
+    llp_regs = (" (as applied to limited liability partnerships by the Limited Liability Partnerships (Accounts and Audit) "
+                "(Application of Companies Act 2006) Regulations 2008)") if llp else ""
+    if o["audited"]:
+        audit = ""
+    elif dormant:
         audit = nn("direp:StatementThatCompanyEntitledToExemptionFromAuditUnderSection480CompaniesAct2006RelatingToDormantCompanies", "cy",
-                   f"For the {'period' if not prior else 'year'} ending {long_date(e_)} the company was entitled to exemption from audit "
-                   "under section 480 of the Companies Act 2006 relating to dormant companies.")
+                   f"For the {'period' if not prior else 'year'} ending {long_date(e_)} the {entity} was entitled to exemption from audit "
+                   f"under section 480 of the Companies Act 2006{llp_regs} relating to dormant {'LLPs' if llp else 'companies'}.")
     else:
         audit = nn("direp:StatementThatCompanyEntitledToExemptionFromAuditUnderSection477CompaniesAct2006RelatingToSmallCompanies", "cy",
-                   f"For the {'period' if not prior else 'year'} ending {long_date(e_)} the company was entitled to exemption from audit "
-                   "under section 477 of the Companies Act 2006 relating to small companies.")
-    members = nn("direp:StatementThatMembersHaveNotRequiredCompanyToObtainAnAudit", "cy",
+                   f"For the {'period' if not prior else 'year'} ending {long_date(e_)} the {entity} was entitled to exemption from audit "
+                   f"under section 477 of the Companies Act 2006{llp_regs} relating to small {'LLPs' if llp else 'companies'}.")
+    members = "" if (llp or o["audited"]) else nn("direp:StatementThatMembersHaveNotRequiredCompanyToObtainAnAudit", "cy",
                  "The members have not required the company to obtain an audit in accordance with section 476 of the Companies Act 2006.")
-    resp = nn("direp:StatementThatDirectorsAcknowledgeTheirResponsibilitiesUnderCompaniesAct", "cy",
-              "The directors acknowledge their responsibilities for complying with the requirements of the Act with respect to "
-              "accounting records and the preparation of accounts.")
-    regime = nn("direp:StatementThatAccountsHaveBeenPreparedInAccordanceWithProvisionsSmallCompaniesRegime", "cy",
-                ("These accounts have been prepared in accordance with the provisions applicable to companies subject to the "
-                 "small companies regime" + (" and in accordance with the micro-entity provisions." if micro else ".")))
-    filleted = "" if micro else ("<p>In accordance with section 444 of the Companies Act 2006 the profit and loss account "
-                                 "has not been delivered to the Registrar of Companies.</p>")
+    resp = "" if o["audited"] else nn("direp:StatementThatDirectorsAcknowledgeTheirResponsibilitiesUnderCompaniesAct", "cy",
+              f"The {'members' if llp else 'directors'} acknowledge their responsibilities for complying with the requirements of the "
+              f"Act{' (as applied to LLPs)' if llp else ''} with respect to accounting records and the preparation of accounts.")
+    regime = "" if o["size"] != "small" else nn("direp:StatementThatAccountsHaveBeenPreparedInAccordanceWithProvisionsSmallCompaniesRegime", "cy",
+                (f"These accounts have been prepared in accordance with the provisions applicable to {'LLPs' if llp else 'companies'} "
+                 "subject to the small " + ("LLP" if llp else "companies") + " regime"
+                 + (" and in accordance with the micro-entity provisions." if micro else ".")))
+    if o["abridged"]:
+        regime += (f" All of the members have consented to the preparation of abridged accounts in accordance with "
+                   f"section 444(2A) of the Companies Act 2006{' (as applied to LLPs)' if llp else ''}.")
+    filleted = "" if (micro or full) else (f"<p>In accordance with section 444 of the Companies Act 2006{' (as applied to LLPs)' if llp else ''} "
+                                 "the profit and loss account has not been delivered to the Registrar of Companies.</p>")
     notes = []
     if not dormant:
         emp = whole(D(d.get("employees")))
-        notes.append(f'<p><b>Average number of employees</b><br/>The average number of persons employed by the company '
-                     f'(including directors) during the {"year" if prior else "period"} was '
+        notes.append(f'<p><b>Average number of {"members and employees" if llp else "employees"}</b><br/>The average number of persons employed by the {entity} '
+                     f'({"including members" if llp else "including directors"}) during the {"year" if prior else "period"} was '
                      f'<ix:nonFraction name="core:AverageNumberEmployeesDuringPeriod" contextRef="cy" unitRef="pure" decimals="0" '
                      f'format="ixt:num-dot-decimal">{emp}</ix:nonFraction>.</p>')
-        if not micro:
+        if full and o["size"] != "small":
             notes.append("<p><b>Accounting policies</b><br/>These financial statements have been prepared in accordance with "
-                         "FRS 102 Section 1A 'Small Entities'. They are prepared under the historical cost convention and are "
+                         "FRS 102 'The Financial Reporting Standard applicable in the UK and Republic of Ireland'"
+                         + (" and the Charities SORP (FRS 102)" if ent == "charity" else "")
+                         + (" and the Statement of Recommended Practice 'Accounting by Limited Liability Partnerships'" if llp else "")
+                         + " and the Companies Act 2006. They are prepared under the historical cost convention and are presented "
+                         "in sterling, rounded to the nearest pound.</p>")
+        elif not micro:
+            notes.append("<p><b>Accounting policies</b><br/>These financial statements have been prepared in accordance with "
+                         "FRS 102 Section 1A 'Small Entities'" + (" and the Charities SORP (FRS 102)" if ent == "charity" else "") + (" and the Statement of Recommended Practice 'Accounting by "
+                         "Limited Liability Partnerships'" if llp else "") + ". They are prepared under the historical cost convention and are "
                          "presented in sterling, rounded to the nearest pound.</p>")
     if dormant:
-        notes.append("<p>The company was dormant throughout the period and has not traded"
+        notes.append(f"<p>The {entity} was dormant throughout the period and has not traded"
                      + (" during the period." if d.get("trading_status") != "never" else " since incorporation.") + "</p>")
+    if ent == "guarantee" or (ent in ("cic", "charity") and g["share_capital"] == 0):
+        amt = (d.get("guarantee_amount") or "1").strip()
+        notes.append(f"<p><b>Company limited by guarantee</b><br/>The company is limited by guarantee and has no share capital. "
+                     f"Each member has undertaken to contribute up to £{esc(amt)} to the assets of the company if it is wound up.</p>")
+    if full and pl["dividends"] and not llp and ent not in ("charity", "guarantee"):
+        notes.append(f"<p><b>Dividends</b><br/>Dividends paid during the {'year' if prior else 'period'}: £{pl['dividends']:,.0f}.</p>")
+    for para in [x.strip() for x in re.split(r"\n\s*\n", d.get("notes_text") or "") if x.strip()]:
+        head, _, body = para.partition("\n")
+        notes.append(f"<p><b>{esc(head)}</b><br/>{esc(body).replace(chr(10), '<br/>')}</p>" if body else f"<p>{esc(head)}</p>")
+    if llp and not dormant:
+        notes.append("<p><b>Members' remuneration</b><br/>Profits are divided among the members automatically in accordance "
+                     "with the LLP agreement and are included in loans and other debts due to members.</p>")
     period_head = f'<th class="v">{e_.year}<br/>£</th>' + (f'<th class="v">{pe.year if pe.year != e_.year else pe.strftime("%d/%m/%Y")}<br/>£</th>' if prior else "")
 
     hidden = "".join([
@@ -666,12 +895,79 @@ def build_ixbrl(c: dict, f: dict, s: dict) -> str:
         nn("bus:EntityTradingStatus", "cy_trading", "") if dormant else "",
         nn("bus:NameEntityOfficer", "cy_dir1", esc(signer)),
     ])
+    def para(text_):
+        return "".join(f"<p>{esc(x).replace(chr(10), '<br/>')}</p>" for x in re.split(r"\n\s*\n", text_ or "") if x.strip())
+
+    officers = [f"{x.get('forename', '')} {x.get('surname', '')}".strip() for x in (c.get("officers") or [])
+                if x.get("role") in ("director", "llp-member", "llp-designated-member", "corporate-director")]
+    pre_pages = ""
+    if full and o["size"] != "small" and not llp and (d.get("strategic_report") or "").strip():
+        pre_pages += (f'<div class="pb"><h2>Strategic report</h2>{para(d.get("strategic_report"))}'
+                      f'<p>This report was approved by the board on {long_date(ap)} and signed on its behalf by {esc(signer)}, Director.</p></div>')
+    if full:
+        who = "members" if llp else ("trustees (who are also directors)" if ent == "charity" else "directors")
+        pre_pages += (f'<div class="pb"><h2>{"Members" if llp else ("Trustees" if ent == "charity" else "Directors")}\' report</h2>'
+                      f'<p>The {who} present their report and the financial statements for the {"year" if prior else "period"} '
+                      f'ended {long_date(e_)}.</p><p><b>Principal activity</b><br/>{esc(d.get("principal_activity", ""))}</p>'
+                      + (f'<p><b>{"Designated members" if llp else "Directors"}</b><br/>' + "<br/>".join(esc(x) for x in officers) + "</p>" if officers else "")
+                      + para(d.get("directors_report"))
+                      + (f"<p><b>Statement of {who}' responsibilities</b><br/>The {who} are responsible for preparing the report and the "
+                         "financial statements in accordance with applicable law and regulations, for keeping adequate accounting records "
+                         "and for safeguarding the assets.</p>")
+                      + (("<p><b>Auditors</b><br/>So far as each person who was a director at the date of approving this report is aware, "
+                          "there is no relevant audit information of which the auditor is unaware, and each director has taken all the steps "
+                          "that they ought to have taken to make themselves aware of any relevant audit information and to establish that "
+                          "the auditor is aware of that information.</p>") if o["audited"] else "")
+                      + ("<p>This report has been prepared in accordance with the provisions applicable to companies entitled to the "
+                         "small companies exemption.</p>" if o["size"] == "small" and not llp else "")
+                      + f"<p>Approved on {long_date(ap)} and signed on behalf of the {'members' if llp else 'board'} by {esc(signer)}.</p></div>")
+    if o["audited"]:
+        adate = pdate(d.get("audit_date"))
+        if (d.get("audit_custom") or "").strip():
+            body = para(d["audit_custom"])
+        else:
+            body = (f"<p><b>Opinion</b><br/>We have audited the financial statements of {esc(name)} for the {'year' if prior else 'period'} "
+                    f"ended {long_date(e_)}. In our opinion the financial statements give a true and fair view of the state of the "
+                    f"{entity}'s affairs as at {long_date(e_)} and of its {'net movement in funds' if ent == 'charity' else 'profit or loss'} "
+                    "for the period then ended; have been properly prepared in accordance with United Kingdom Generally Accepted "
+                    "Accounting Practice; and have been prepared in accordance with the requirements of the Companies Act 2006"
+                    + (" as applied to LLPs" if llp else "") + ".</p>"
+                    "<p><b>Basis for opinion</b><br/>We conducted our audit in accordance with International Standards on Auditing "
+                    "(UK) and applicable law. We are independent of the entity in accordance with the ethical requirements relevant "
+                    "to our audit in the UK, including the FRC's Ethical Standard. We believe the audit evidence we have obtained is "
+                    "sufficient and appropriate to provide a basis for our opinion.</p>")
+        pre_pages += (f'<div class="pb"><h2>Independent auditor\'s report to the members of {esc(name)}</h2>{body}'
+                      f'<p>{nn("aurep:NameSeniorStatutoryAuditor", "cy", esc(d.get("auditor_ssa", "")))} (Senior Statutory Auditor)<br/>'
+                      f'for and on behalf of {nn("bus:NameEntityAuditors", "cy", esc(d.get("auditor_firm", "")))}, Statutory Auditor<br/>'
+                      f'{esc(d.get("auditor_address", ""))}<br/>'
+                      + (ixdate("aurep:DateAuditorsReport", "cy", adate) if adate else "") + "</p></div>")
+    if plrows:
+        ph = f'<tr><th></th><th></th><th class="v">{e_.year}<br/>£</th>' + (f'<th class="v">{pe.year}<br/>£</th>' if prior else "") + "</tr>"
+        pre_pages += (f'<div class="pb"><h2>{"Statement of financial activities (summary)" if ent == "charity" else "Profit and loss account"}'
+                      f' for the {"year" if prior else "period"} ended {long_date(e_)}</h2><table>{ph}{"".join(plrows)}</table>'
+                      + ("<p>The company's turnover and cost of sales are combined as gross profit, as permitted for abridged accounts.</p>"
+                         if o["abridged"] else "") + "</div>")
+    post_pages = ""
+    if cfrows:
+        ph = f'<tr><th></th><th></th><th class="v">{e_.year}<br/>£</th>' + (f'<th class="v">{pe.year}<br/>£</th>' if prior else "") + "</tr>"
+        post_pages += f'<div class="pb"><h2>Statement of cash flows for the {"year" if prior else "period"} ended {long_date(e_)}</h2><table>{ph}{"".join(cfrows)}</table></div>'
+    if ent == "cic":
+        post_pages += ('<div class="pb"><h2>Community interest company report (CIC34)</h2>'
+                       f'<p><b>Company name:</b> {esc(name)} · <b>Company number:</b> {esc(num)} · <b>Year end:</b> {long_date(e_)}</p>'
+                       f'<p><b>Part 1 – General description of the company\'s activities and impact</b></p>{para(d.get("cic_activities"))}'
+                       f'<p><b>Part 2 – Consultation with stakeholders</b></p>{para(d.get("cic_consultation") or "No consultation with stakeholders took place.")}'
+                       f'<p><b>Part 3 – Directors\' remuneration</b></p>{para(d.get("cic_remuneration") or "No remuneration was received by the directors.")}'
+                       f'<p><b>Part 4 – Transfers of assets other than for full consideration</b></p>{para(d.get("cic_transfers") or "No transfer of assets other than for full consideration has been made.")}'
+                       f'<p>Signed by {esc(signer)}, Director, on {long_date(ap)}.</p></div>')
+    if ent == "charity" and (d.get("charity_number") or "").strip():
+        pre_pages = f"<p style='text-align:center'>Registered charity number: {esc(d['charity_number'])}</p>" + pre_pages
+
     title = f"{esc(name)} – Annual accounts {long_date(e_)}"
     doc = f"""<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
  xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2020-02-12" xmlns:xbrli="http://www.xbrl.org/2003/instance"
  xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:iso4217="http://www.xbrl.org/2003/iso4217"
- xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:core="{ns['core']}" xmlns:bus="{ns['bus']}" xmlns:direp="{ns['direp']}" xml:lang="en">
+ xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:core="{ns['core']}" xmlns:bus="{ns['bus']}" xmlns:direp="{ns['direp']}" xmlns:aurep="{ns['aurep']}" xml:lang="en">
 <head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/><title>{title}</title>
 <style type="text/css">body{{font-family:Arial,Helvetica,sans-serif;font-size:11pt;max-width:760px;margin:30px auto;color:#000}}
 h1{{font-size:16pt;margin:0}}h2{{font-size:13pt;margin:22px 0 6px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:3px 4px}}
@@ -684,15 +980,17 @@ td.h{{font-weight:bold;padding-top:10px}}.cover{{text-align:center;margin:60px 0
 </ix:header></div>
 <div class="cover"><p>Registered number: {nn("bus:UKCompaniesHouseRegisteredNumber", "cy", esc(num))}</p>
 <h1>{nn("bus:EntityCurrentLegalOrRegisteredName", "cy", esc(name))}</h1>
-<p>{'Unaudited ' if True else ''}{'Dormant ' if dormant else ''}{'Micro-entity ' if micro and not dormant else ''}{'Filleted ' if not micro else ''}Financial Statements</p>
+<p>{'Annual Report and Audited ' if o['audited'] else 'Unaudited '}{'Dormant ' if dormant else ''}{'Micro-entity ' if micro and not dormant else ''}{'Abridged ' if o['abridged'] else ''}{'Filleted ' if not micro and not full else ''}Financial Statements</p>
 <p>for the {'year' if prior else 'period'} {'from ' + ixdate("bus:StartDateForPeriodCoveredByReport", "cy", s_) + ' to '}{ixdate("bus:EndDateForPeriodCoveredByReport", "cy", e_)}</p></div>
+{pre_pages}
 <div class="pb"><h2>{esc(name)}<br/>Balance sheet as at {ixdate("bus:BalanceSheetDate", "cy", e_)}</h2>
 <table><tr><th></th><th></th>{period_head}</tr>{''.join(rows)}</table>
-<p>{audit}</p><p>{members}</p><p>{resp}</p><p>{regime}</p>{filleted}
-<p>The financial statements were approved and authorised for issue by the board on
+{('<p>' + audit + '</p>') if audit else ''}{('<p>' + members + '</p>') if members else ''}{('<p>' + resp + '</p>') if resp else ''}{('<p>' + regime + '</p>') if regime else ''}{filleted}
+<p>The financial statements were approved and authorised for issue by {'the members' if llp else 'the board'} on
 {ixdate("core:DateAuthorisationFinancialStatementsForIssue", "cy", ap)} and were signed on its behalf by:</p>
-<p>{nn("core:DirectorSigningFinancialStatements", "cy_dir1", esc(signer))}<br/>Director</p>
+<p>{nn("core:DirectorSigningFinancialStatements", "cy_dir1", esc(signer))}<br/>{'Designated member' if llp else 'Director'}</p>
 <p>Registered number: {esc(num)}</p></div>
+{post_pages}
 {('<div class="pb"><h2>Notes to the financial statements</h2>' + ''.join(notes) + '</div>') if notes else ''}
 </body></html>"""
     return doc
@@ -1144,6 +1442,7 @@ def sa800_split(f: dict) -> dict:
 # ----------------------------------------------------------------------------- routes
 
 def _ctx(**kw):
+    kw.update(PL_LINES=PL_LINES, SIZES=SIZES, ENTITIES=ENTITIES)
     kw.update(VERSION=VERSION, KINDS=KINDS, FT=FILING_TYPES, GROUPS=GROUPS, CH_STATUS=CH_STATUS, HMRC_STAGES=HMRC_STAGES,
               DONE=DONE, money=money, period_label=period_label, days_left=days_left, is_done=is_done)
     return kw
@@ -1278,7 +1577,9 @@ def filing_page(cid, fid):
     extra = {}
     if f["type"].startswith("ACC_"):
         extra["g"], extra["gp"], extra["prior"] = acc_figures(f["d"]), acc_figures(f["d"], "py_"), has_prior(f["d"])
-        extra["LINES"] = ACC_LINES
+        llp_ = f["type"] == "ACC_LLP" or (f["type"] == "ACC_FULL" and f["d"].get("entity") == "llp")
+        extra["LINES"] = LLP_LINES if llp_ else ACC_LINES
+        extra["pl"], extra["plp"] = pl_figures(f["d"]), pl_figures(f["d"], "py_")
     elif f["type"] == "CT600":
         extra["ct"] = ct_computation(f)
     elif f["type"] == "SA100":
@@ -1300,7 +1601,7 @@ def _form_into(f: dict):
     for k, v in form.items():
         if k.startswith("d_"):
             d[k[2:]] = v.strip()
-    for flag in ("first_year", "sic_change", "email_change", "capital_change"):
+    for flag in ("first_year", "sic_change", "email_change", "capital_change", "audited"):
         if f"present_{flag}" in form:
             d[flag] = "1" if form.get(f"d_{flag}") else ""
     if f["type"] == "CS01":
@@ -1661,9 +1962,21 @@ FILING = r"""{% extends "base" %}{% block body %}""" + STYLE + DUE_CELL + r"""
 <div><label>Period start</label><input type="date" name="d_start" value="{{d.start}}"></div>
 <div><label>Balance sheet date (period end)</label><input type="date" name="d_end" value="{{d.end}}"></div>
 <div><label>Approved by the directors on</label><input type="date" name="d_approved" value="{{d.approved}}"></div>
-<div><label>Director signing</label><input type="text" name="d_signer" value="{{d.signer}}" list="officers">
+{% set llp = f.type=='ACC_LLP' %}{% set dorm = f.type=='ACC_DORMANT' or (llp and d.regime=='dormant') %}
+{% if llp %}<div><label>Accounts type</label><select name="d_regime" style="width:100%"><option value="micro" {{'selected' if d.regime=='micro'}}>Micro-entity LLP (FRS 105)</option>
+<option value="small" {{'selected' if d.regime=='small'}}>Small LLP – filleted (FRS 102 1A + LLP SORP)</option><option value="dormant" {{'selected' if d.regime=='dormant'}}>Dormant LLP</option></select>
+<div class="why">Save after changing – the form adjusts.</div></div>{% endif %}
+{% if f.type=='ACC_FULL' %}{% set llp = d.entity=='llp' %}
+<div><label>Entity</label><select name="d_entity" style="width:100%">{% for k, v in ENTITIES.items() if (k=='llp') == (c.kind=='llp') %}<option value="{{k}}" {{'selected' if d.entity==k}}>{{v}}</option>{% endfor %}</select></div>
+<div><label>Size</label><select name="d_size" style="width:100%">{% for k, v in SIZES.items() %}<option value="{{k}}" {{'selected' if d.size==k}}>{{v}}</option>{% endfor %}</select>
+<div class="why">Medium and large are always audited.</div></div>
+<div><label>Format</label><select name="d_fmt" style="width:100%"><option value="full" {{'selected' if d.fmt!='abridged'}}>Full accounts (with profit and loss)</option>
+<option value="abridged" {{'selected' if d.fmt=='abridged'}}>Abridged (small only – starts at gross profit)</option></select></div>
+<div><input type="hidden" name="present_audited" value="1"><label style="margin-top:24px"><input type="checkbox" name="d_audited" {{'checked' if d.audited or d.size in ('medium','large')}}> Audited</label></div>
+{% endif %}
+<div><label>{{ 'Designated member signing' if llp else 'Director signing' }}</label><input type="text" name="d_signer" value="{{d.signer}}" list="officers">
 <datalist id="officers">{% for o in c.officers %}<option value="{{o.forename}} {{o.surname}}">{% endfor %}</datalist></div>
-{% if f.type!='ACC_DORMANT' %}<div><label>Average employees (incl. directors)</label><input type="text" class="num" name="d_employees" value="{{d.employees}}"></div>{% else %}
+{% if not dorm %}<div><label>Average {{ 'members + employees' if llp else 'employees (incl. directors)' }}</label><input type="text" class="num" name="d_employees" value="{{d.employees}}"></div>{% else %}
 <div><label>Trading status</label><select name="d_trading_status" style="width:100%"><option value="never" {{'selected' if d.trading_status=='never'}}>Dormant – has never traded</option><option value="past" {{'selected' if d.trading_status!='never'}}>Dormant – traded in the past</option></select></div>{% endif %}
 </div>
 <input type="hidden" name="present_first_year" value="1"><label><input type="checkbox" name="d_first_year" {{'checked' if d.first_year}}> First accounts (no comparative figures)</label>
@@ -1673,7 +1986,35 @@ FILING = r"""{% extends "base" %}{% block body %}""" + STYLE + DUE_CELL + r"""
 <tr><td>Other reserves</td><td><input type="text" class="num" name="d_other_reserves" value="{{d.other_reserves}}"></td>{% if not d.first_year %}<td><input type="text" class="num" name="d_py_other_reserves" value="{{d.py_other_reserves}}"></td>{% endif %}</tr>
 <tr><td><b>Net current assets</b></td><td class="r">{{money(g.ncl)}}</td>{% if not d.first_year %}<td class="r">{{money(gp.ncl)}}</td>{% endif %}</tr>
 <tr class="tot"><td>Net assets = shareholders' funds</td><td class="r">{{money(g.net)}}</td>{% if not d.first_year %}<td class="r">{{money(gp.net)}}</td>{% endif %}</tr>
-<tr><td>Profit and loss account (balancing figure)</td><td class="r">{{money(g.reserves)}}</td>{% if not d.first_year %}<td class="r">{{money(gp.reserves)}}</td>{% endif %}</tr></table>
+{% if llp %}<tr><td>Loans and other debts due to members (balancing figure – profits allocated to members)</td><td class="r">{{money(g.loans_members)}}</td>{% if not d.first_year %}<td class="r">{{money(gp.loans_members)}}</td>{% endif %}</tr>
+{% else %}<tr><td>Profit and loss account (balancing figure)</td><td class="r">{{money(g.reserves)}}</td>{% if not d.first_year %}<td class="r">{{money(gp.reserves)}}</td>{% endif %}</tr>{% endif %}</table>
+{% if f.type=='ACC_FULL' %}
+{% if d.entity=='charity' %}<p><label>Restricted funds (rest of net assets = unrestricted)</label></p><table class="t"><tr><td>Restricted funds</td><td><input type="text" class="num" name="d_restricted_funds" value="{{d.restricted_funds}}"></td>{% if not d.first_year %}<td><input type="text" class="num" name="d_py_restricted_funds" value="{{d.py_restricted_funds}}"></td>{% endif %}</tr></table>{% endif %}
+<h3>{{ 'Income and expenditure' if d.entity=='charity' else 'Profit and loss account' }} <span class="why">expenses as positive numbers</span></h3>
+<table class="t"><tr><th></th><th class="r">This period</th>{% if not d.first_year %}<th class="r">Previous period</th>{% endif %}</tr>
+{% for k, lab, concept in PL_LINES %}{% if not (d.fmt=='abridged' and k=='cost_sales') %}<tr><td>{{ 'Gross profit (abridged)' if d.fmt=='abridged' and k=='turnover' else ('Income' if d.entity=='charity' and k=='turnover' else lab) }}</td>
+<td><input type="text" class="num" name="d_{{k}}" value="{{d[k]}}"></td>{% if not d.first_year %}<td><input type="text" class="num" name="d_py_{{k}}" value="{{d['py_'+k]}}"></td>{% endif %}</tr>{% endif %}{% endfor %}
+<tr class="tot"><td>Profit (loss) after tax</td><td class="r">{{money(pl.pat)}}</td>{% if not d.first_year %}<td class="r">{{money(plp.pat)}}</td>{% endif %}</tr>
+{% if pl.any_cf %}<tr><td>Net change in cash (cash flow)</td><td class="r">{{money(pl.cf_net)}}</td>{% if not d.first_year %}<td class="r">{{money(plp.cf_net)}}</td>{% endif %}</tr>{% endif %}</table>
+<h3>Reports and notes</h3>
+<label>Principal activity</label><input type="text" name="d_principal_activity" value="{{d.principal_activity}}">
+<label>Directors' report – extra paragraphs (optional; blank line between paragraphs)</label><textarea name="d_directors_report" rows="3" style="width:100%">{{d.directors_report}}</textarea>
+{% if d.size in ('medium','large') %}<label>Strategic report (required for medium / large companies)</label><textarea name="d_strategic_report" rows="6" style="width:100%">{{d.strategic_report}}</textarea>{% endif %}
+<label>Extra notes (first line = note title, then the text; blank line between notes)</label><textarea name="d_notes_text" rows="6" style="width:100%" placeholder="Tangible fixed assets&#10;Cost at start ...&#10;&#10;Debtors&#10;Trade debtors ...">{{d.notes_text}}</textarea>
+{% if d.entity in ('guarantee','cic','charity') %}<label>Guarantee per member (£) – guarantee companies</label><input type="text" name="d_guarantee_amount" value="{{d.guarantee_amount}}" placeholder="1">{% endif %}
+{% if d.entity=='charity' %}<label>Registered charity number</label><input type="text" name="d_charity_number" value="{{d.charity_number}}">{% endif %}
+{% if d.entity=='cic' %}<h3>Community interest report (CIC34)</h3>
+<label>Part 1 – activities and community benefit</label><textarea name="d_cic_activities" rows="3" style="width:100%">{{d.cic_activities}}</textarea>
+<label>Part 2 – consultation with stakeholders (blank = none)</label><textarea name="d_cic_consultation" rows="2" style="width:100%">{{d.cic_consultation}}</textarea>
+<label>Part 3 – directors' remuneration (blank = none)</label><textarea name="d_cic_remuneration" rows="2" style="width:100%">{{d.cic_remuneration}}</textarea>
+<label>Part 4 – asset transfers (blank = none)</label><textarea name="d_cic_transfers" rows="2" style="width:100%">{{d.cic_transfers}}</textarea>{% endif %}
+{% if d.audited or d.size in ('medium','large') %}<h3>Auditor</h3><div class="fgrid">
+<div><label>Audit firm</label><input type="text" name="d_auditor_firm" value="{{d.auditor_firm}}"></div>
+<div><label>Senior statutory auditor</label><input type="text" name="d_auditor_ssa" value="{{d.auditor_ssa}}"></div>
+<div><label>Auditor's address</label><input type="text" name="d_auditor_address" value="{{d.auditor_address}}"></div>
+<div><label>Date of auditor's report</label><input type="date" name="d_audit_date" value="{{d.audit_date}}"></div></div>
+<label>Auditor's report text (optional – paste the signed report; blank = standard unmodified opinion)</label><textarea name="d_audit_custom" rows="5" style="width:100%">{{d.audit_custom}}</textarea>{% endif %}
+{% endif %}
 <p class="btnrow"><a class="btn small secondary" href="/uktax/c/{{c.id}}/f/{{f.id}}/accounts.html" target="_blank">👁 View accounts</a>
 <a class="btn small secondary" href="/uktax/c/{{c.id}}/f/{{f.id}}/accounts.html?download=1">⬇ Download iXBRL</a></p></div>
 {% elif f.type=='CS01' %}
@@ -1770,7 +2111,7 @@ Officers, PSCs and registered office changes are filed separately (Company forms
 {% if f.status in ('draft',) %}
 <p><a class="btn small secondary" href="/uktax/c/{{c.id}}/f/{{f.id}}/xml" target="_blank">Preview XML + official schema check</a></p>
 <form method="post" action="/uktax/c/{{c.id}}/f/{{f.id}}/submit">
-<label><input type="checkbox" name="approved"> The {{ 'directors approved these accounts' if f.type.startswith('ACC_') else 'company confirmed these details' }} and asked us to file</label>
+<label><input type="checkbox" name="approved"> The {{ ('members approved these accounts' if f.type=='ACC_LLP' else 'directors approved these accounts') if f.type.startswith('ACC_') else 'company / LLP confirmed these details' }} and asked us to file</label>
 <div class="btnrow" style="margin-top:8px"><button class="btn secondary" name="mode" value="test" {{'disabled' if errs or not creds_ok}}>Send TEST (nothing is filed)</button>
 <input type="text" name="confirm_live" placeholder="type LIVE" style="width:110px"><button class="btn" name="mode" value="live" {{'disabled' if errs or not live_ok}}>File LIVE with Companies House</button></div>
 {% if not live_ok %}<p class="why">LIVE is locked until Companies House approves our software for this form (UK Tax → Clients → Settings).</p>{% endif %}</form>{% endif %}
