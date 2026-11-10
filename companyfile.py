@@ -725,7 +725,8 @@ COMPANY = """{% extends "base" %}""" + EXP + """{% block body %}""" + STYLE + ""
 <div><h1 style="margin-bottom:6px">{{c.company_name}}</h1>
 {% if c._gone %}<span class="pill high">not in the client database any more</span>{% endif %}</div>
 <div class="btnrow"><a class="btn secondary small" href="/companies">← All companies</a>
-{% if ver %}<a class="btn small" href="/company/zip?name={{c.company_name|urlencode}}">⬇ Download company folder (ZIP)</a>{% endif %}</div></div>
+{% if ver %}<a class="btn small" href="/company/zip?name={{c.company_name|urlencode}}">⬇ Download company folder (ZIP)</a>{% endif %}
+{% if not c._gone %}<form method="post" action="/pending/search_company" style="display:inline"><input type="hidden" name="name" value="{{c.company_name}}"><button class="btn small secondary" title="Look for this company's letters in every earlier batch">🔎 Search all batches</button></form>{% endif %}</div></div>
 <div class="kv" style="margin-top:12px">
 <b>Unit (SIU)</b><span>{{c.siu or "—"}}</span><b>Address on file</b><span>{{c.address or "—"}}</span>
 <b>Email</b><span>{{c.email or "—"}}</span><b>Contact</b><span>{{c.contact_name or "—"}}</span>
