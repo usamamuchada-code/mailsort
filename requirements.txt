@@ -4,3 +4,4 @@ pytesseract>=0.3.10
 pillow>=10
 anthropic>=0.40
 lxml>=5
+openpyxl>=3.1
