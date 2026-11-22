@@ -143,15 +143,24 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s)
 
 
-def find_company(d: dict, name: str, number: str = "") -> str | None:
+def _key(name: str) -> str:
+    """Exact name, case and spacing ignored (so 'AMPLUS-X LTD' and 'AMPLUS-X LLC' stay two companies)."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower().replace("&", "and").replace("limited", "ltd"))
+
+
+def find_company(d: dict, name: str, number: str = "", jur: str | None = None) -> str | None:
     number = (number or "").strip().lstrip("'").upper()
-    n = _norm(name)
+    k, n = _key(name), _norm(name)
     for cid, c in d["companies"].items():
         if number and c.get("number", "").upper() == number:
             return cid
     for cid, c in d["companies"].items():
-        if n and _norm(c.get("name", "")) == n:
+        if k and _key(c.get("name", "")) == k and (jur is None or c.get("jurisdiction") == jur):
             return cid
+    if jur:     # same jurisdiction: "Ltd" vs "Limited", punctuation
+        for cid, c in d["companies"].items():
+            if n and c.get("jurisdiction") == jur and _norm(c.get("name", "")) == n:
+                return cid
     return None
 
 
@@ -606,7 +615,7 @@ def _s(v) -> str:
 
 
 def _upsert(d: dict, name: str, number: str, jur: str, **fields) -> tuple[str, bool]:
-    cid = find_company(d, name, number)
+    cid = find_company(d, name, number, jur)
     new = cid is None
     if new:
         cid = uuid.uuid4().hex[:10]
