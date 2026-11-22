@@ -1,5 +1,5 @@
 """
-UK Formations tab (v41c) – incorporate UK companies and LLPs straight to Companies House by software filing
+UK Formations tab (v41d) – incorporate UK companies and LLPs straight to Companies House by software filing
 (XML Gateway, form "CompanyIncorporation" – schema CompanyIncorporation-v3-8, FormSubmission-v2-11).
 
 Self-contained add-on: app.py only imports this file and calls register(app, load_config, send_email).
@@ -39,7 +39,7 @@ try:
 except Exception:  # pragma: no cover – the tab shows a clear message instead
     etree = None
 
-VERSION = "v41c"
+VERSION = "v41d"
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get("DATA_DIR") or ROOT / "data")
 OUT = DATA / "uk_formations"   # own folder – the removed v39a tab left old files in DATA/formations
@@ -431,10 +431,10 @@ def precheck(m: dict, s: dict) -> tuple[list[str], list[str]]:
                 errs.append(f"{who}: nationality is missing.")
             code = re.sub(r"[\s-]", "", p.get("personal_code") or "")
             if (r.get("director") and not is_llp(a)) or (r.get("member") and is_llp(a)):
-                if len(code) != 11:
+                if not re.fullmatch(r"[A-Za-z0-9]{11}", code):
                     errs.append(f"{who}: Companies House personal code must be 11 characters (identity verification "
                                 f"is required for every director / LLP member).")
-            elif r.get("psc") and code and len(code) != 11:
+            elif r.get("psc") and code and not re.fullmatch(r"[A-Za-z0-9]{11}", code):
                 errs.append(f"{who}: PSC personal code must be 11 characters (or leave it blank – the PSC then has "
                             f"14 days after incorporation to verify).")
             elif r.get("psc") and not code:
@@ -776,6 +776,23 @@ def build_incorporation(m: dict, s: dict):
             E(g, "MemorandumStatement", "Each subscriber to this memorandum of association wishes to form a company "
               "under the Companies Act 2006 and agrees to become a member of the company.")
 
+    if is_llp(a):
+        # Companies House: an LLP incorporation must be authorised by a member (Agent is refused –
+        # "Invalid Authoriser Designation for LLP incorporation"). Use the first designated member.
+        mems = [p for p in people if p.get("roles", {}).get("member")]
+        signer = next((p for p in mems if p["roles"].get("designated") or ct == "LLPDES"), mems[0] if mems else {})
+        au = E(E(root, "Authoriser"), "Member")
+        if signer.get("kind") == "person":
+            pe = E(au, "Person")
+            fn = " ".join(v.strip() for v in (signer.get("forename"), signer.get("other_forenames")) if v and v.strip())
+            if fn:
+                E(pe, "Forename", fn[:50])
+            E(pe, "Surname", (signer.get("surname") or "").strip())
+        else:
+            co = E(au, "Corporate")
+            E(co, "CorporateName", (signer.get("corp_name") or "").strip())
+        E(E(au, "Authentication"), "AuthoriserPersonalAuthentication", "AUTHORISER_AGREES_NAME_USED_TO_AUTHENTICATE")
+        return _tail(root, a)
     au = E(E(root, "Authoriser"), "Agent")
     co = E(au, "Corporate")
     if s.get("agent_forename") and s.get("agent_surname"):
@@ -786,6 +803,10 @@ def build_incorporation(m: dict, s: dict):
     _addr(au, "Address", {"premise": s.get("agent_premise"), "street": s.get("agent_street"),
                           "thoroughfare": s.get("agent_thoroughfare"), "post_town": s.get("agent_post_town"),
                           "postcode": s.get("agent_postcode"), "country": s.get("agent_country") or "GB-ENG"}, "base")
+    return _tail(root, a)
+
+
+def _tail(root, a):
     E(root, "SameDay", "true" if a.get("same_day") else "false")
     if a.get("same_name"):
         E(root, "SameName", "true")
