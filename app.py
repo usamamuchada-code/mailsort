@@ -112,6 +112,8 @@ def require_login():
         return None  # local use – no password configured
     if request.path in ("/login", "/ein/telnyx/webhook") or request.path.startswith("/sign/") or session.get("auth"):   # /sign/: client signing links (token-protected)
         return None
+    if request.path.startswith("/api/ein/"):   # the client portal: checked by portal_link (Bearer PORTAL_API_KEY)
+        return None
     # legacy basic-auth still accepted (e.g. saved bookmarks/scripts)
     a = request.authorization
     if a and a.type == "basic" and a.username == AUTH_USER and a.password == AUTH_PASS:
@@ -1328,6 +1330,18 @@ def _send_one(bid: str, b: dict, i: int, cfg: dict):
         if cfg.get("attach_pdfs") else []
     send_email(cfg, e["email"], subject, body, atts)
     e["sent_at"] = dt.datetime.now().isoformat(timespec="seconds"); e["sent_to"] = e["email"]
+    _to_portal(bdir, [L for L in b["letters"]
+                      if L["client"] and L["client"]["company_name"] == e["company"] and L.get("in_package", True)
+                      and not L.get("unit_mismatch") and L.get("match_state") != "review"], e["email"])
+
+
+def _to_portal(bdir, letters, email):
+    """Also file the letters in the client's portal (Letters folder). Never stops the email going out."""
+    try:
+        import portal_link
+        portal_link.push_letters(bdir, letters, email)
+    except Exception as ex:
+        print(f"[portal] letters: {ex}", flush=True)
 
 
 @app.post("/batch/<bid>/send/<int:i>")
@@ -1538,6 +1552,7 @@ def _send_letter_email(bid: str, L: dict, cfg: dict):
     send_email(cfg, c["email"], subject, body, atts)
     L["emailed_at"] = dt.datetime.now().isoformat(timespec="seconds")
     L["emailed_to"] = c["email"]
+    _to_portal(batch_dir(bid), [L], c["email"])
 
 
 @app.post("/batch/<bid>/send_letter/<lid>")
@@ -2067,6 +2082,13 @@ try:
     tracker.register(app, load_config, send_email)
 except Exception as _ex:  # never let the add-on stop the mail room from starting
     print(f"[tracker] Tracker tab not loaded: {_ex}", flush=True)
+
+# ----------------------------------------------------------------------------- Client portal link (SS-4s in, EINs and letters out)
+try:
+    import portal_link
+    portal_link.register(app)
+except Exception as _ex:  # never let the add-on stop the mail room from starting
+    print(f"[portal] Portal link not loaded: {_ex}", flush=True)
 
 
 if __name__ == "__main__":
